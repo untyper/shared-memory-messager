@@ -1,1 +1,1 @@
-# shared-memory-communicator
+# shared-memory-messager
