@@ -1,18 +1,18 @@
-# SharedMemoryCommunicationWithEvents
+# shared-memory-messager
 
 ## How to use
 1. Include in project
 2. Define types for abstract communication
 
 ```c++
-enum MessageType
+enum Message_Type
 {
   DEBUG_LOG = 0xFF,
   // ...
   // More message types here
 };
 
-struct DebugLog
+struct Debug_Log
 {
   char text[1024] = {};
 };
@@ -23,28 +23,28 @@ struct DebugLog
 3. Create communication channel and register message handler
 
 ```c++
-void MessageHandler(Message message)
+void message_handler(Message message)
 {
-  switch (message.GetType())
+  switch (message.get_type())
   {
     case DEBUG_LOG:
     {
-      auto content = message.GetContentAs<DebugLog>();
+      auto content = message.get_content_as<Debug_Log>();
       std::cout << "Debug message from another process: " << content.text << std::endl;
       break;
     }
   }
 }
 
-MessageThread communication(L"MyVeryOwnIPC"); // or communication.CreateChannel(L"MyVeryOwnIPC");
-communication.SetHandler(MessageHandler);
+Message_Thread smm(L"my-first-channel"); // or smm.create_channel(L"my-first-channel");
+smm.set_handler(message_handler);
 ```
 
 4. Send message to another process that has also created/opened the same message channel
 
 ```c++
 std::wstring text = L"Hello world!";
-DebugLog content;
+Debug_Log content;
 
 // Copy data from paremeter to DebugLog object
 for (int i = 0; i < text.size(); i++)
@@ -53,7 +53,7 @@ for (int i = 0; i < text.size(); i++)
 }
 
 // Finally send message to the other process
-communication.Send({DEBUG_LOG, content});
+smm.send({DEBUG_LOG, content});
 ```
 
 ## Remarks
