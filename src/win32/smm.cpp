@@ -89,7 +89,7 @@ bool Messaging_Channel::create_mapping()
 // Getter to check if event and mapping stuff have been created successfully
 bool Messaging_Channel::is_channel_created()
 {
-  return this->is_channel_created;
+  return this->channel_created;
 }
 
 // Create communication channel (event object and shared memory)
@@ -103,7 +103,7 @@ void Messaging_Channel::create_channel(std::wstring id)
 
   if (this->create_mapping() && this->create_event_objects())
   {
-    this->is_channel_created = true;
+    this->channel_created = true;
   }
 }
 

@@ -175,7 +175,7 @@ class Messaging_Channel
 {
   protected:
   // True if create_event_object() and create_mapping() both succeed, false otherwise
-  bool is_channel_created = false;
+  bool channel_created = false;
 
   Message_Event sent;
   Message_Event emptied;
