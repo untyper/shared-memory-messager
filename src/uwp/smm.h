@@ -10,6 +10,7 @@
 #include <functional>
 #include <utility>
 #include <thread>
+#include <atomic>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
@@ -195,8 +196,11 @@ struct Message_Info
 class Message_Client : public Messaging_Channel
 {
   protected:
-  bool is_sender_thread_running = false;
-  bool is_receiver_thread_running = false;
+  std::thread sender_thread;
+  std::thread receiver_thread;
+
+  std::atomic<bool> is_sender_thread_running = false;
+  std::atomic<bool> is_receiver_thread_running = false;
 
   Message_Queue<Message_Info> send_queue;
   std::function<void(Message)> handler;
@@ -216,4 +220,5 @@ class Message_Client : public Messaging_Channel
 
   Message_Client(std::wstring id, std::function<void(Message)> handler = nullptr);
   Message_Client() {};
+  ~Message_Client();
 };

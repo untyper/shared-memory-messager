@@ -149,12 +149,12 @@ void Message_Client::sender_loop()
     auto queued = this->send_queue.dequeue();
     auto& receiver = queued.receiver;
 
-    // TODO:
-    // Change INFINITE to a 10 second timeout in case the process doesn't signal the 'emptied' event to us.
+    // 10 Second timeout to eventually skip sending to an uncleared channel.
     // That way we can still continue sending messages to other receivers.
+    constexpr int timeout = 1000 * 10;
 
     // Make sure any pre-existing message has been processed
-    WaitForSingleObject(receiver.get_emptied_event().get_object(), INFINITE);
+    WaitForSingleObject(receiver.get_emptied_event().get_object(), timeout);
 
     // Fill shared memory with the next enqueued item
     *reinterpret_cast<Message*>(receiver.get_mapping().get_address()) = queued.message;
@@ -195,7 +195,7 @@ void Message_Client::start_sender_loop()
   if (!this->is_sender_thread_running)
   {
     this->is_sender_thread_running = true;
-    std::thread(&Message_Client::sender_loop, this).detach();
+    this->sender_thread = std::thread(&Message_Client::sender_loop, this);
   }
 }
 
@@ -205,7 +205,7 @@ void Message_Client::start_receiver_loop()
   if (!this->is_receiver_thread_running)
   {
     this->is_receiver_thread_running = true;
-    std::thread(&Message_Client::receiver_loop, this).detach();
+    this->receiver_thread = std::thread(&Message_Client::receiver_loop, this);
   }
 }
 
@@ -251,15 +251,24 @@ void Message_Client::close()
   }
 
   // Unmap file memory and close all handles
-  this->close();
+  Messaging_Channel::close();
 
   // Signal to message threads to terminate
   this->is_sender_thread_running = false;
   this->is_receiver_thread_running = false;
+
+  // Join threads with main thread
+  this->sender_thread.join();
+  this->receiver_thread.join();
 }
 
 // Constructor. ID must be unique
 Message_Client::Message_Client(std::wstring id, std::function<void(Message)> handler)
 {
   this->create(id, handler);
+}
+
+Message_Client::~Message_Client()
+{
+  this->close();
 }
