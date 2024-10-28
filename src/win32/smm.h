@@ -170,6 +170,7 @@ class Messaging_Channel
   // Constructors
   Messaging_Channel(std::wstring id);
   Messaging_Channel() {}
+  ~Messaging_Channel();
 };
 
 class Message_Receiver : public Messaging_Channel
@@ -181,6 +182,7 @@ class Message_Receiver : public Messaging_Channel
   Message_Mapping& get_mapping();
 
   void open(std::wstring id);
+  void close();
 
   Message_Receiver(std::wstring id);
   Message_Receiver() {}
@@ -209,6 +211,7 @@ class Message_Client : public Messaging_Channel
   void receiver_loop();
   void start_sender_loop();
   void start_receiver_loop();
+  void _close();
 
   public:
   bool is_thread_running();

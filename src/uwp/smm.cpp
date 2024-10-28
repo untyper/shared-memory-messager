@@ -113,6 +113,11 @@ Messaging_Channel::Messaging_Channel(std::wstring id)
   this->create_channel(id);
 }
 
+Messaging_Channel::~Messaging_Channel()
+{
+  this->close();
+}
+
 // Getters
 Message_Event& Message_Receiver::get_sent_event()
 {
@@ -132,6 +137,11 @@ Message_Mapping& Message_Receiver::get_mapping()
 void Message_Receiver::open(std::wstring id)
 {
   this->create_channel(id);
+}
+
+void Message_Receiver::close()
+{
+  Messaging_Channel::close();
 }
 
 // Constructor. ID must be unique
@@ -241,17 +251,13 @@ void Message_Client::create(std::wstring id, std::function<void(Message)> handle
   }
 }
 
-// Close channel (for example) before reassigning to a new channel
-void Message_Client::close()
+void Message_Client::_close()
 {
   // Wait until all messages in the message queue are sent
   while (!this->send_queue.is_empty())
   {
     Sleep(10);
   }
-
-  // Unmap file memory and close all handles
-  Messaging_Channel::close();
 
   // Signal to message threads to terminate
   this->is_sender_thread_running = false;
@@ -262,6 +268,16 @@ void Message_Client::close()
   this->receiver_thread.join();
 }
 
+// Close channel (for example) before reassigning to a new channel
+void Message_Client::close()
+{
+  // End threads and finish sending messages
+  this->_close();
+
+  // Unmap file memory and close all handles
+  Messaging_Channel::close();
+}
+
 // Constructor. ID must be unique
 Message_Client::Message_Client(std::wstring id, std::function<void(Message)> handler)
 {
@@ -270,5 +286,6 @@ Message_Client::Message_Client(std::wstring id, std::function<void(Message)> han
 
 Message_Client::~Message_Client()
 {
-  this->close();
+  this->_close();
+  // No need to call parent's close because the destructor does it
 }
