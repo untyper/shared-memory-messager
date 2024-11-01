@@ -1,5 +1,9 @@
 # shared-memory-messager
 
+## TODO:
+- Use a lock free queue for sending messages instead. Current queue locks the thread access for every access, this is very inefficient and slows down aplication requiring high performance message output.
+- For a fast lock free queue see https://github.com/cameron314/readerwriterqueue
+
 ## How to use
 1. Include in project
 2. Define types for abstract communication
