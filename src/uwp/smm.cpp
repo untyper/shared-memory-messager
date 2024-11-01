@@ -69,7 +69,7 @@ bool Messaging_Channel::is_channel_created()
   return this->channel_created;
 }
 
-std::wstring& Messaging_Channel::get_id()
+const std::wstring& Messaging_Channel::get_id()
 {
   return this->id;
 }

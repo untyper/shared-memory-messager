@@ -166,7 +166,7 @@ class Messaging_Channel
 
   public:
   bool is_channel_created();
-  std::wstring& get_id();
+  const std::wstring& get_id();
   void close();
 
   // Constructors
