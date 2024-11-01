@@ -68,6 +68,11 @@ bool Messaging_Channel::is_channel_created()
   return this->channel_created;
 }
 
+std::wstring& Messaging_Channel::get_id()
+{
+  return this->id;
+}
+
 // Create communication channel (event object and shared memory)
 // This should only be called once.
 // Check is_channel_created() to see if that's the case.
