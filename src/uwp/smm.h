@@ -38,17 +38,23 @@
 
 #define PAGE_SIZE 4096
 
+namespace smm
+{
+
+// Helper to convert std::string to std::string for UWP specifics
+std::wstring string_to_wstring(const std::string& utf8String);
+
 // Ref: stackoverflow.com/a/16075550
 // A threadsafe-queue.
 template <class T>
 class Message_Queue
 {
-  private:
+private:
   std::queue<T> queue;
   mutable std::mutex mutex;
   std::condition_variable condition;
 
-  public:
+public:
   // Add an element to the queue.
   void enqueue(T t)
   {
@@ -129,12 +135,12 @@ struct Message
 
 class Message_Object
 {
-  private:
-  std::wstring name;
+private:
+  std::string name;
   HANDLE object = NULL;
 
-  public:
-  std::wstring& get_name();
+public:
+  std::string& get_name();
   HANDLE& get_object();
 };
 
@@ -142,19 +148,19 @@ using Message_Event = Message_Object;
 
 class Message_Mapping : public Message_Object
 {
-  private:
+private:
   PVOID address = NULL; // byte to byte file mapping object's address
 
-  public:
+public:
   PVOID& get_address();
 };
 
 class Messaging_Channel
 {
-  protected:
+protected:
   // True if CreateEventObject() and CreateMapping() both succeed, false otherwise
   bool channel_created = false;
-  std::wstring id;
+  std::string id;
 
   Message_Event sent;
   Message_Event emptied;
@@ -163,29 +169,29 @@ class Messaging_Channel
   // Member functions below
   bool create_event_objects();
   bool create_mapping();
-  void create_channel(std::wstring id);
+  void create_channel(std::string id);
 
-  public:
+public:
   bool is_channel_created();
-  const std::wstring& get_id();
+  const std::string& get_id();
   void close();
 
   // Constructors
-  Messaging_Channel(std::wstring id);
+  Messaging_Channel(std::string id);
   Messaging_Channel() {}
 };
 
 class Message_Receiver : public Messaging_Channel
 {
-  public:
+public:
   // Getters
   Message_Event& get_sent_event();
   Message_Event& get_emptied_event();
   Message_Mapping& get_mapping();
 
-  void open(std::wstring id);
+  void open(std::string id);
 
-  Message_Receiver(std::wstring id);
+  Message_Receiver(std::string id);
   Message_Receiver() {}
 };
 
@@ -197,7 +203,7 @@ struct Message_Info
 
 class Message_Client : public Messaging_Channel
 {
-  protected:
+protected:
   std::thread sender_thread;
   std::thread receiver_thread;
 
@@ -213,14 +219,16 @@ class Message_Client : public Messaging_Channel
   void start_sender_loop();
   void start_receiver_loop();
 
-  public:
+public:
   bool is_thread_running();
   void send(Message_Receiver receiver, Message data);
   void set_handler(std::function<void(Message)> handler);
-  void create(std::wstring id, std::function<void(Message)> handler = nullptr);
+  void create(std::string id, std::function<void(Message)> handler = nullptr);
   void close(); // Override
 
-  Message_Client(std::wstring id, std::function<void(Message)> handler = nullptr);
+  Message_Client(std::string id, std::function<void(Message)> handler = nullptr);
   Message_Client() {};
   ~Message_Client();
 };
+
+} // namespace smm

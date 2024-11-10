@@ -38,6 +38,9 @@
 
 #define PAGE_SIZE 4096
 
+namespace smm
+{
+
 // Ref: stackoverflow.com/a/16075550
 // A threadsafe-queue.
 template <class T>
@@ -129,11 +132,11 @@ struct Message
 class Message_Object
 {
   private:
-  std::wstring name;
+  std::string name;
   HANDLE object = NULL;
 
   public:
-  std::wstring& get_name();
+  std::string& get_name();
   HANDLE& get_object();
 };
 
@@ -153,7 +156,7 @@ class Messaging_Channel
   protected:
   // True if create_event_object() and create_mapping() both succeed, false otherwise
   bool channel_created = false;
-  std::wstring id;
+  std::string id;
 
   Message_Event sent;
   Message_Event emptied;
@@ -162,15 +165,15 @@ class Messaging_Channel
   // Member functions below
   bool create_event_objects();
   bool create_mapping();
-  void create_channel(std::wstring id);
+  void create_channel(std::string id);
 
   public:
   bool is_channel_created();
-  const std::wstring& get_id();
+  const std::string& get_id();
   void close();
 
   // Constructors
-  Messaging_Channel(std::wstring id);
+  Messaging_Channel(std::string id);
   Messaging_Channel() {}
 };
 
@@ -182,9 +185,9 @@ class Message_Receiver : public Messaging_Channel
   Message_Event& get_emptied_event();
   Message_Mapping& get_mapping();
 
-  void open(std::wstring id);
+  void open(std::string id);
 
-  Message_Receiver(std::wstring id);
+  Message_Receiver(std::string id);
   Message_Receiver() {}
 };
 
@@ -216,10 +219,12 @@ class Message_Client : public Messaging_Channel
   bool is_thread_running();
   void send(Message_Receiver receiver, Message data);
   void set_handler(std::function<void(Message)> handler);
-  void create(std::wstring id, std::function<void(Message)> handler = nullptr);
+  void create(std::string id, std::function<void(Message)> handler = nullptr);
   void close(); // Override
 
-  Message_Client(std::wstring id, std::function<void(Message)> handler = nullptr);
+  Message_Client(std::string id, std::function<void(Message)> handler = nullptr);
   Message_Client() {}
   ~Message_Client();
 };
+
+} // namespace smm

@@ -6,7 +6,23 @@
 #include "pch.h"
 #include "smm.h"
 
-std::wstring& Message_Object::get_name()
+using namespace smm;
+
+std::wstring smm::string_to_wstring(const std::string& utf8String)
+{
+  // Determine the size of the resulting wide string
+  int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, utf8String.c_str(), -1, NULL, 0);
+
+  // Create a wide string to hold the converted result
+  std::wstring wideString(sizeNeeded - 1, 0); // sizeNeeded includes null terminator, so exclude it
+
+                                              // Perform the conversion
+  MultiByteToWideChar(CP_UTF8, 0, utf8String.c_str(), -1, &wideString[0], sizeNeeded);
+
+  return wideString;
+}
+
+std::string& Message_Object::get_name()
 {
   return this->name;
 }
@@ -24,12 +40,12 @@ PVOID& Message_Mapping::get_address()
 // Member functions below
 bool Messaging_Channel::create_event_objects()
 {
-  if (!(this->sent.get_object() = CreateEvent(NULL, FALSE, FALSE, this->sent.get_name().data())))
+  if (!(this->sent.get_object() = CreateEventA(NULL, FALSE, FALSE, this->sent.get_name().data())))
   {
     return false; // Failed to create event object
   }
 
-  if (!(this->emptied.get_object() = CreateEvent(NULL, FALSE, TRUE, this->emptied.get_name().data())))
+  if (!(this->emptied.get_object() = CreateEventA(NULL, FALSE, TRUE, this->emptied.get_name().data())))
   {
     return false; // Failed to create event object
   }
@@ -47,7 +63,7 @@ bool Messaging_Channel::create_mapping()
   ULONG64 size = sizeof(Message); // In bytes
   HANDLE& mapping_object = this->mapping.get_object();
 
-  if (!(mapping_object = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, size, this->mapping.get_name().data())))
+  if (!(mapping_object = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, size, string_to_wstring(this->mapping.get_name()).data())))
   {
     return false; // Failed to create mapping object
   }
@@ -69,7 +85,7 @@ bool Messaging_Channel::is_channel_created()
   return this->channel_created;
 }
 
-const std::wstring& Messaging_Channel::get_id()
+const std::string& Messaging_Channel::get_id()
 {
   return this->id;
 }
@@ -77,11 +93,11 @@ const std::wstring& Messaging_Channel::get_id()
 // Create communication channel (event object and shared memory)
 // This should only be called once.
 // Check is_channel_created() to see if that's the case.
-void Messaging_Channel::create_channel(std::wstring id)
+void Messaging_Channel::create_channel(std::string id)
 {
-  this->mapping.get_name() = id + L".mapping";
-  this->sent.get_name() = id + L".event";
-  this->emptied.get_name() = id + L".emptied";
+  this->mapping.get_name() = id + ".mapping";
+  this->sent.get_name() = id + ".event";
+  this->emptied.get_name() = id + ".emptied";
 
   if (this->create_mapping() && this->create_event_objects())
   {
@@ -114,7 +130,7 @@ void Messaging_Channel::close()
 }
 
 // Constructor. ID must be unique
-Messaging_Channel::Messaging_Channel(std::wstring id)
+Messaging_Channel::Messaging_Channel(std::string id)
 {
   this->create_channel(id);
 }
@@ -135,13 +151,13 @@ Message_Mapping& Message_Receiver::get_mapping()
   return this->mapping;
 }
 
-void Message_Receiver::open(std::wstring id)
+void Message_Receiver::open(std::string id)
 {
   this->create_channel(id);
 }
 
 // Constructor. ID must be unique
-Message_Receiver::Message_Receiver(std::wstring id)
+Message_Receiver::Message_Receiver(std::string id)
 {
   this->open(id);
 }
@@ -236,7 +252,7 @@ void Message_Client::set_handler(std::function<void(Message)> handler)
   this->start_receiver_loop();
 }
 
-void Message_Client::create(std::wstring id, std::function<void(Message)> handler)
+void Message_Client::create(std::string id, std::function<void(Message)> handler)
 {
   this->create_channel(id);
   this->start_sender_loop();
@@ -269,7 +285,7 @@ void Message_Client::close()
 }
 
 // Constructor. ID must be unique
-Message_Client::Message_Client(std::wstring id, std::function<void(Message)> handler)
+Message_Client::Message_Client(std::string id, std::function<void(Message)> handler)
 {
   this->create(id, handler);
 }
