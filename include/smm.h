@@ -17,7 +17,7 @@
 
 // Windows includes
 #include <Windows.h>
-#include <winapifamily.h>
+//#include <winapifamily.h>
 
 // NOTES:
 // - To use this in a UWP app, define SMM_UWP
@@ -325,7 +325,7 @@ public:
 // ********** Definitions **********
 
 #ifdef SMM_UWP
-std::wstring string_to_wstring(const std::string& utf8_string)
+inline std::wstring string_to_wstring(const std::string& utf8_string)
 {
   // Determine the size of the resulting wide string
   int size_needed = MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, NULL, 0);
@@ -340,23 +340,23 @@ std::wstring string_to_wstring(const std::string& utf8_string)
 }
 #endif
 
-std::string& Message_Object::get_name()
+inline std::string& Message_Object::get_name()
 {
   return this->name;
 }
 
-HANDLE& Message_Object::get_object()
+inline HANDLE& Message_Object::get_object()
 {
   return this->object;
 }
 
-PVOID& Message_Mapping::get_address()
+inline PVOID& Message_Mapping::get_address()
 {
   return this->address;
 }
 
 // Member functions below
-bool Messaging_Channel::create_event_objects()
+inline bool Messaging_Channel::create_event_objects()
 {
   if (!(this->sent.get_object() = CreateEventA(NULL, FALSE, FALSE, this->sent.get_name().data())))
   {
@@ -373,7 +373,7 @@ bool Messaging_Channel::create_event_objects()
   return true;
 }
 
-bool Messaging_Channel::create_mapping()
+inline bool Messaging_Channel::create_mapping()
 {
   // We are using INVALID_HANDLE_VALUE for handle to use a mapping object
   // backed by a system paging file so that we don't have to create a file manually
@@ -406,12 +406,12 @@ bool Messaging_Channel::create_mapping()
 }
 
 // Getter to check if event and mapping stuff have been created successfully
-bool Messaging_Channel::is_channel_created()
+inline bool Messaging_Channel::is_channel_created()
 {
   return this->channel_created;
 }
 
-const std::string& Messaging_Channel::get_id()
+inline const std::string& Messaging_Channel::get_id()
 {
   return this->id;
 }
@@ -419,7 +419,7 @@ const std::string& Messaging_Channel::get_id()
 // Create communication channel (event object and shared memory)
 // This should only be called once.
 // Check is_channel_created() to see if that's the case.
-void Messaging_Channel::create_channel(std::string id)
+inline void Messaging_Channel::create_channel(std::string id)
 {
   this->mapping.get_name() = id + ".mapping";
   this->sent.get_name() = id + ".event";
@@ -432,7 +432,7 @@ void Messaging_Channel::create_channel(std::string id)
   }
 }
 
-void Messaging_Channel::close()
+inline void Messaging_Channel::close()
 {
   PVOID& mapping_address = this->mapping.get_address();
   HANDLE& mapping_object = this->mapping.get_object();
@@ -456,40 +456,40 @@ void Messaging_Channel::close()
 }
 
 // Constructor. ID must be unique
-Messaging_Channel::Messaging_Channel(std::string id)
+inline Messaging_Channel::Messaging_Channel(std::string id)
 {
   this->create_channel(id);
 }
 
 // Getters
-Message_Event& Message_Receiver::get_sent_event()
+inline Message_Event& Message_Receiver::get_sent_event()
 {
   return this->sent;
 }
 
-Message_Event& Message_Receiver::get_emptied_event()
+inline Message_Event& Message_Receiver::get_emptied_event()
 {
   return this->emptied;
 }
 
-Message_Mapping& Message_Receiver::get_mapping()
+inline Message_Mapping& Message_Receiver::get_mapping()
 {
   return this->mapping;
 }
 
-void Message_Receiver::open(std::string id)
+inline void Message_Receiver::open(std::string id)
 {
   this->create_channel(id);
 }
 
 // Constructor. ID must be unique
-Message_Receiver::Message_Receiver(std::string id)
+inline Message_Receiver::Message_Receiver(std::string id)
 {
   this->open(id);
 }
 
 // Move assignment operator
-Message_Info& Message_Info::operator=(Message_Info&& other) noexcept
+inline Message_Info& Message_Info::operator=(Message_Info&& other) noexcept
 {
   // Avoid self-assignment
   if (this != &other)
@@ -506,7 +506,7 @@ Message_Info& Message_Info::operator=(Message_Info&& other) noexcept
 }
 
 // Copy assignment operator
-Message_Info& Message_Info::operator=(const Message_Info& other)
+inline Message_Info& Message_Info::operator=(const Message_Info& other)
 {
   // Avoid self-assignment
   if (this != &other)
@@ -520,7 +520,7 @@ Message_Info& Message_Info::operator=(const Message_Info& other)
 }
 
 // Move constructor
-Message_Info::Message_Info(Message_Info&& other) noexcept :
+inline Message_Info::Message_Info(Message_Info&& other) noexcept :
   receiver(std::move(other.receiver)),
   message(std::move(other.message))
 {
@@ -531,20 +531,20 @@ Message_Info::Message_Info(Message_Info&& other) noexcept :
 }
 
 // Copy constructor
-Message_Info::Message_Info(const Message_Info& other) :
+inline Message_Info::Message_Info(const Message_Info& other) :
   receiver(other.receiver),
   message(other.message),
   send_attempts(other.send_attempts.load())
 {
 }
 
-Message_Info::Message_Info(Message_Receiver receiver, Message data) :
+inline Message_Info::Message_Info(Message_Receiver receiver, Message data) :
   receiver(std::move(receiver)),
   message(std::move(data))
 {
 }
 
-bool Message_Client::create_enqueue_signaling(std::string id)
+inline bool Message_Client::create_enqueue_signaling(std::string id)
 {
   this->enqueued.get_name() = id + ".i_event"; // Internal event
 
@@ -554,19 +554,19 @@ bool Message_Client::create_enqueue_signaling(std::string id)
   }
 }
 
-bool Message_Client::send_enqueued_signal()
+inline bool Message_Client::send_enqueued_signal()
 {
   return SetEvent(this->enqueued.get_object());
 }
 
-void Message_Client::wait_for_enqueued_signal()
+inline void Message_Client::wait_for_enqueued_signal()
 {
   WaitForSingleObject(this->enqueued.get_object(), INFINITE);
 }
 
 // Pulls out data from the to-be-sent queue to finally send the message to the user-specified receiver.
 // This function runs on its own thread.
-void Message_Client::sender_loop()
+inline void Message_Client::sender_loop()
 {
   while (this->is_sender_thread_running)
   {
@@ -621,7 +621,7 @@ void Message_Client::sender_loop()
 // Main message loop for this client.
 // This function waits for messages from other processes, dereferences them
 // and relays them to the user-specified message handler.
-void Message_Client::receiver_loop()
+inline void Message_Client::receiver_loop()
 {
   while (this->is_receiver_thread_running)
   {
@@ -643,7 +643,7 @@ void Message_Client::receiver_loop()
   }
 }
 
-void Message_Client::start_sender_loop()
+inline void Message_Client::start_sender_loop()
 {
   // Only spawn a new thread if not already running
   if (!this->is_sender_thread_running)
@@ -653,7 +653,7 @@ void Message_Client::start_sender_loop()
   }
 }
 
-void Message_Client::start_receiver_loop()
+inline void Message_Client::start_receiver_loop()
 {
   // Only spawn a new thread if not already running
   if (!this->is_receiver_thread_running)
@@ -665,13 +665,13 @@ void Message_Client::start_receiver_loop()
 
 // Use this in combination with is_channel_created() to (for example)
 // check if the current client object can be reassigned to a new channel
-bool Message_Client::is_thread_running()
+inline bool Message_Client::is_thread_running()
 {
   return (this->is_sender_thread_running && this->is_receiver_thread_running);
 }
 
 // This function adds data to our to-be-sent queue
-void Message_Client::send(Message_Receiver receiver, Message data)
+inline void Message_Client::send(Message_Receiver receiver, Message data)
 {
   this->send_queue.enqueue(Message_Info{receiver, data});
   this->send_enqueued_signal();
@@ -679,13 +679,13 @@ void Message_Client::send(Message_Receiver receiver, Message data)
 
 // Function for assigning a user-specified message handler.
 // Automatically starts the message thread if it doesn't exist already.
-void Message_Client::set_handler(std::function<void(Message)> handler)
+inline void Message_Client::set_handler(std::function<void(Message)> handler)
 {
   this->handler = handler;
   this->start_receiver_loop();
 }
 
-void Message_Client::create(std::string id, std::function<void(Message)> handler)
+inline void Message_Client::create(std::string id, std::function<void(Message)> handler)
 {
   this->create_enqueue_signaling(id);
   this->create_channel(id);
@@ -698,7 +698,7 @@ void Message_Client::create(std::string id, std::function<void(Message)> handler
 }
 
 // Close channel (for example) before reassigning to a new channel
-void Message_Client::close()
+inline void Message_Client::close()
 {
   // Wait until all messages in the message queue are sent
   while (this->send_queue.size() != 0)
@@ -719,7 +719,7 @@ void Message_Client::close()
 }
 
 // Move assignment operator
-Message_Client& Message_Client::operator=(Message_Client&& other) noexcept
+inline Message_Client& Message_Client::operator=(Message_Client&& other) noexcept
 {
   // Avoid self-assignment
   if (this != &other)
@@ -745,7 +745,7 @@ Message_Client& Message_Client::operator=(Message_Client&& other) noexcept
 }
 
 // Move constructor
-Message_Client::Message_Client(Message_Client&& other) noexcept :
+inline Message_Client::Message_Client(Message_Client&& other) noexcept :
   Messaging_Channel(std::move(other)),
   sender_thread(std::move(other.sender_thread)),
   receiver_thread(std::move(other.receiver_thread)),
@@ -764,12 +764,12 @@ Message_Client::Message_Client(Message_Client&& other) noexcept :
 }
 
 // Constructor. ID must be unique
-Message_Client::Message_Client(std::string id, std::function<void(Message)> handler)
+inline Message_Client::Message_Client(std::string id, std::function<void(Message)> handler)
 {
   this->create(id, handler);
 }
 
-Message_Client::~Message_Client()
+inline Message_Client::~Message_Client()
 {
   this->close();
 }
