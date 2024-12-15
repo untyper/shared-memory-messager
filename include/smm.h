@@ -615,31 +615,17 @@ namespace smm
     // Total content size should be equal to
     // a standard page size i.e. ~4096 bytes
 
-    int get_id() const
-    {
-      return this->id;
-    }
+    int get_id() const;
 
     template <typename T>
-    T get_content_as()
-    {
-      return *reinterpret_cast<T*>(this->content);
-    }
+    T get_content_as();
 
     template <typename T>
-    void set_content_as(int id, T content)
-    {
-      this->id = id;
-      *reinterpret_cast<T*>(this->content) = content;
-    }
+    void set_content_as(int id, T content);
 
     // Constructors
     template <typename T>
-    Message(int id, T content)
-    {
-      this->set_content_as(id, content);
-    }
-
+    Message(int id, T content);
     Message() {}
   };
 
@@ -1347,6 +1333,30 @@ namespace smm
       this->create_channel(id);
     }
   } // namespace _detail
+
+  inline int Message::get_id() const
+  {
+    return this->id;
+  }
+
+  template <typename T>
+  inline T Message::get_content_as()
+  {
+    return *reinterpret_cast<T*>(this->content);
+  }
+
+  template <typename T>
+  inline void Message::set_content_as(int id, T content)
+  {
+    this->id = id;
+    *reinterpret_cast<T*>(this->content) = content;
+  }
+
+  template <typename T>
+  inline Message::Message(int id, T content)
+  {
+    this->set_content_as(id, content);
+  }
 
   inline bool Client::is_connected() const
   {
