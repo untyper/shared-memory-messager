@@ -53,10 +53,11 @@
 // DEV NOTES FOR FUTURE MAINTENANCE:
 // - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
 // - Use SMM_UNIX_<NNN> format for Unix specific macro definitions.
+// - Inline member fields in a class/struct should use uniform initialization.
 
 #define SMM_MESSAGE_SIZE 4096
-#define SMM_MAX_QUEUE_CAPACITY 300
-#define SMM_MAX_CLIENTS_PER_SERVER 50
+#define SMM_MAX_QUEUE_CAPACITY 128
+#define SMM_MAX_CLIENTS_PER_SERVER 64
 
 #define SMM_MESSAGE_ID static constexpr int _smm_id
 
@@ -73,6 +74,12 @@
 #define SMM_DISCONNECTION_NORMAL -1
 #define SMM_DISCONNECTION_CLOSING -2
 
+// Sandbox path attached as a prefix to mapping and semaphore string identifiers.
+// For a custom path, define this before including smm.h
+#ifndef SMM_SANDBOX_PATH
+#define SMM_SANDBOX_PATH "SMM/SANDBOX/"
+#endif
+
 namespace smm
 {
   namespace _detail
@@ -82,7 +89,7 @@ namespace smm
     class High_Precision_Timer
     {
 #ifdef _WIN32
-      HANDLE timer_event; // Event handle for synchronization
+      HANDLE timer_event{ nullptr }; // Event handle for synchronization
 
       // Static callback for multimedia timer
       static void CALLBACK timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2);
@@ -199,7 +206,7 @@ namespace smm
 
       std::array<Entry, Capacity> data;
       std::atomic<uint64_t> free_list_head; // Stores index and counter
-      static constexpr std::size_t INVALID_INDEX = Capacity;
+      static constexpr std::size_t INVALID_INDEX{ Capacity };
 
       // Helper functions to pack and unpack index and counter
       uint64_t pack_index_counter(std::size_t index, std::size_t counter) const
@@ -598,9 +605,9 @@ namespace smm
   std::wstring string_to_wstring(const std::string& utf8_string);
 #endif
 
-  // Base class for all messages.
+  // Conversion class for all messages.
   // Use this to discern id of message before
-  // casting the buffer to the correct id for reading...
+  // casting the content buffer to the correct id for reading...
   struct Message
   {
     int id{ 0 }; // 4 bytes
@@ -608,7 +615,7 @@ namespace smm
     // Total content size should be equal to
     // a standard page size i.e. ~4096 bytes
 
-    int get_id()
+    int get_id() const
     {
       return this->id;
     }
@@ -640,12 +647,12 @@ namespace smm
   {
     struct Message_Connection
     {
-      SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION;
-      int sender_id = SMM_SENDER_ID_UNKNOWN;
+      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_CONNECTION };
+      int sender_id{ SMM_SENDER_ID_UNKNOWN };
 
-      Message_Connection(int sender_id)
+      Message_Connection(int sender_id) :
+        sender_id(sender_id)
       {
-        this->sender_id = sender_id;
       }
 
       friend struct Message;
@@ -653,25 +660,25 @@ namespace smm
 
     struct Message_Connection_Response
     {
-      SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION_RESPONSE;
-      bool success = false;
+      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_CONNECTION_RESPONSE };
+      bool success{ false };
 
-      Message_Connection_Response(bool success)
+      Message_Connection_Response(bool success) :
+        success(success)
       {
-        this->success = success;
       }
     };
 
     struct Message_Disconnection
     {
-      SMM_MESSAGE_ID = SMM_MESSAGE_ID_DISCONNECTION;
-      int sender_id = SMM_SENDER_ID_UNKNOWN;
-      int reason = SMM_DISCONNECTION_NORMAL;
+      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_DISCONNECTION };
+      int sender_id{ SMM_SENDER_ID_UNKNOWN };
+      int reason{ SMM_DISCONNECTION_NORMAL };
 
-      Message_Disconnection(int sender_id, int reason = SMM_DISCONNECTION_NORMAL)
+      Message_Disconnection(int sender_id, int reason = SMM_DISCONNECTION_NORMAL) :
+        sender_id(sender_id),
+        reason(reason)
       {
-        this->sender_id = sender_id;
-        this->reason = reason;
       }
 
       friend struct Message;
@@ -680,7 +687,7 @@ namespace smm
     // Container for message and it's metadata
     struct Message_Packet
     {
-      int sender_id = 0;
+      int sender_id{ 0 };
       Message message;
     };
 
@@ -702,18 +709,18 @@ namespace smm
 #endif
 
   using connection_handler_t = std::function<void(Connection&)>;
-  using disconnection_handler_t = std::function<void(Client&)>;
+  using disconnection_handler_t = std::function<void(Client&, int)>;
   using message_handler_t = std::function<void(Client&, Message&)>;
 
   class Client
   {
   protected:
-    std::shared_ptr<_detail::_Client> shared = nullptr;
+    std::shared_ptr<_detail::_Client> shared{ nullptr };
 
   public:
     int get_id() const;
     bool is_connected() const;
-    void diconnect(int reason = SMM_DISCONNECTION_NORMAL);
+    void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
 
     void send(Message* message);
     void send(Message message);
@@ -739,7 +746,7 @@ namespace smm
   class Server
   {
   protected:
-    std::shared_ptr<_detail::_Server> shared = nullptr;
+    std::shared_ptr<_detail::_Server> shared{ nullptr };
 
   public:
     bool is_thread_running();
@@ -805,8 +812,8 @@ namespace smm
       Shared_Queue<Message_Packet> message_queue;
 
       // True if CreateEventObject() and CreateMapping() both succeed, false otherwise
-      bool channel_created = false;
-      int id = -1;
+      bool channel_created{ false };
+      int id{ -1 };
 
       bool create_channel(int id);
 
@@ -827,23 +834,25 @@ namespace smm
     class _Client : public _Channel
     {
     protected:
-      std::atomic<bool> connected = false;
-      _Server* server = nullptr;
+      std::atomic<bool> connected{ false };
+      _Server* server = { nullptr };
 
       bool open(int id);
+      void close();
 
     public:
       int get_id() const;
       bool is_connected() const;
-      void diconnect(int reason = SMM_DISCONNECTION_NORMAL);
+      void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
 
       void send(Message* message);
 
       template <typename T, typename... Args>
-      void send(Args... args);
+      void send(Args&&... args);
 
-      _Client() {}
       _Client(int id, _Server* server);
+      _Client() {}
+      ~_Client();
 
       friend class Client;
       friend class Server;
@@ -856,9 +865,9 @@ namespace smm
     protected:
       std::future<bool> listening_thread;
 
-      std::atomic<bool> listening_async = false;
-      std::atomic<bool> listening_loop_running = false;
-      std::atomic<bool> open = false;
+      std::atomic<bool> listening_async{ false };
+      std::atomic<bool> listening_loop_running{ false };
+      std::atomic<bool> open{ false };
 
       Safe_Array<Client, SMM_MAX_CLIENTS_PER_SERVER> clients;
 
@@ -1239,9 +1248,9 @@ namespace smm
 
 #ifdef _WIN32
 #ifdef SMM_WIN_UWP
-      this->file_mapping = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, size, string_to_wstring(name).data());
+      this->file_mapping = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, static_cast<DWORD>(size), string_to_wstring(name).data());
 #else
-      this->file_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, name.data());
+      this->file_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(size), name.data());
 #endif
       // return this->file_mapping != nullptr;
 #else
@@ -1287,11 +1296,12 @@ namespace smm
     {
       std::string id_string = std::to_string(id);
 
-      // TODO: PREFIX WITH GUID PATH FOR DEEPER SANDBOXING
-      std::string file_mapping_name = id_string + ".mapping";
-      std::string semaphore_name = id_string + ".signal";
+      // Construct mapping and semaphore id strings.
+      // Isolates from global namespace to sandbox.
+      std::string file_mapping_name = SMM_SANDBOX_PATH + id_string + ".mapping";
+      std::string semaphore_name = SMM_SANDBOX_PATH + id_string + ".signal";
 
-      constexpr int shared_memory_size =
+      constexpr std::size_t shared_memory_size =
         Shared_Queue<Message_Packet>::get_control_block_size()
         + SMM_MESSAGE_SIZE
         * SMM_MAX_QUEUE_CAPACITY;
@@ -1348,9 +1358,9 @@ namespace smm
     return this->shared->get_id();
   }
 
-  inline void Client::diconnect(int reason)
+  inline void Client::disconnect(int reason)
   {
-    this->shared->diconnect(reason);
+    this->shared->disconnect(reason);
   }
 
   inline void Client::send(Message* message)
@@ -1543,6 +1553,14 @@ namespace smm
       return false; // Error
     }
 
+    inline void _Client::close()
+    {
+      this->connected.store(false);
+      this->server = nullptr;
+
+      _Channel::close();
+    }
+
     inline bool _Client::is_connected() const
     {
       return this->connected.load();
@@ -1553,7 +1571,7 @@ namespace smm
       return this->id;
     }
 
-    inline void _Client::diconnect(int reason)
+    inline void _Client::disconnect(int reason)
     {
       this->send<Message_Disconnection>(this->server->id, reason);
 
@@ -1566,6 +1584,8 @@ namespace smm
       {
         this->server->clients.erase(client_exists->index);
       }
+
+      this->connected.store(false);
     }
 
     inline void _Client::send(Message* message)
@@ -1589,7 +1609,7 @@ namespace smm
     }
 
     template <typename T, typename... Args>
-    inline void _Client::send(Args... args)
+    inline void _Client::send(Args&&... args)
     {
       // Construct custom message
       T custom_message(std::forward<Args>(args)...);
@@ -1608,6 +1628,11 @@ namespace smm
       server(server)
     {
       this->open(id);
+    }
+
+    inline _Client::~_Client()
+    {
+      this->close();
     }
 
     inline void _Server::_message_handler(int sender_id, Message& message)
@@ -1669,7 +1694,8 @@ namespace smm
 
           if (this->disconnection_handler)
           {
-            this->disconnection_handler(sender);
+            int reason = message.get_content_as<Message_Disconnection>().reason;
+            this->disconnection_handler(sender, reason);
           }
 
           // Finally remove from our list
@@ -1701,6 +1727,7 @@ namespace smm
     // and relays them to the user-specified message handler.
     inline void _Server::listening_loop(listening_interval_t interval)
     {
+      // TODO: Integrate timer into _Server as a member instead
       High_Precision_Timer timer;
 
       while (this->listening_loop_running.load())
@@ -1874,6 +1901,7 @@ namespace smm
       // TODO: Timeout?
       while (!this->message_queue.is_empty())
       {
+        // TODO: Use High_Precision_Timer instead
         std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep to avoid busy waiting
       }
 
@@ -1897,7 +1925,7 @@ namespace smm
           continue;
         }
 
-        client_exists->value.diconnect(SMM_DISCONNECTION_CLOSING);
+        client_exists->value.disconnect(SMM_DISCONNECTION_CLOSING);
       }
 
       // Unmap file memory and close all handles
