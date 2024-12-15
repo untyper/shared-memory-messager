@@ -7,11 +7,11 @@ Single header, idiomatic IPC library for C++ 17 (and up)
 - Circular buffer based
 - Idiomatic usage pattern
 
-## TODO:
-- Check `include/smm.h`
-
 ## Usage
 - TODO
+
+## Todo:
+- Check `include/smm.h`
 
 ## Notes
 - Hasn't been tested on Unix
