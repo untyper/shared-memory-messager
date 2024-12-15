@@ -3,775 +3,1982 @@
 // License: MIT (See the LICENSE file in the root directory)
 // Github: https://github.com/untyper/shared-memory-messager
 
-#pragma once
+#ifndef SMM_SHARED_MEMORY_MESSAGER_H
+#define SMM_SHARED_MEMORY_MESSAGER_H
 
 // C/C++ includes
 #include <string>
 #include <functional>
-#include <utility>
 #include <thread>
+#include <future>
 #include <atomic>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
+#include <memory>
+#include <optional>
+#include <array>
+#include <utility>
+#include <cstddef>
+//#include <iostream>
 
+#ifdef _WIN32
 // Windows includes
-#include <Windows.h>
+#include <windows.h>
+#include <mmsystem.h>
 //#include <winapifamily.h>
 
-// NOTES:
-// - To use this in a UWP app, define SMM_UWP
-// 
-// - Each messaging channel only has one message 'slot' which is continually being read from.
-//   All synchronization to make sure the messages are delivered properly is performed by the sender instead.
-//   By doing it this way, we avoid complex queuing logic on the shared memory space,
-//   although this method does come with it's own limitations too.
-//
-// - No Linux support. To support linux, implement event logic with Linux semaphores. TODOs...
+// Remember to link against Winmm.lib in the project settings or
+// alternatively uncomment the below if using Visual Studio
+//#pragma comment(lib, "Winmm.lib")
+#else
+// Unix includes
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include <cstring>
+#include <time.h>
 
-#ifdef GetObject
-#undef GetObject
+// Define INFINITE for Unix
+#ifndef INFINITE
+#define INFINITE ((unsigned int)-1)
+#endif
 #endif
 
-#define PAGE_SIZE 4096
-#define MAX_SEND_ATTEMPTS 4
+// NOTES:
+// - To use this in a UWP app, define SMM_WIN_UWP
+
+// TODO:
+// - Keep alive mechanism to remove abruptly disconnected clients
+// - Increase timer delay precision and add an interval parameter to client::send
+
+// DEV NOTES FOR FUTURE MAINTENANCE:
+// - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
+// - Use SMM_UNIX_<NNN> format for Unix specific macro definitions.
+
+#define SMM_MESSAGE_SIZE 4096
+#define SMM_MAX_QUEUE_CAPACITY 300
+#define SMM_MAX_CLIENTS_PER_SERVER 50
+
+#define SMM_MESSAGE_ID static constexpr int _smm_id
+
+// Negative message ID's are reserved for internal messages.
+// End-users should use positive integers
+#define SMM_MESSAGE_ID_CONNECTION -1
+#define SMM_MESSAGE_ID_CONNECTION_RESPONSE -2
+#define SMM_MESSAGE_ID_DISCONNECTION -3
+
+// Generic client ids
+#define SMM_SENDER_ID_UNKNOWN -1
+
+// Disconnection reason codes
+#define SMM_DISCONNECTION_NORMAL -1
+#define SMM_DISCONNECTION_CLOSING -2
 
 namespace smm
 {
+  namespace _detail
+  {
+    // Source: github.com/untyper/high-precision-timer
+    // Cross platform high precision timer (Windows / Unix)
+    class High_Precision_Timer
+    {
+#ifdef _WIN32
+      HANDLE timer_event; // Event handle for synchronization
 
-#ifdef SMM_UWP
-// Helper to convert std::string to std::string for UWP specifics
-std::wstring string_to_wstring(const std::string& utf8_string);
+      // Static callback for multimedia timer
+      static void CALLBACK timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2);
 #endif
 
-template <typename T>
-class Message_Queue
-{
-private:
-  struct Node
+    public:
+      // High-resolution sleep function without busy-waiting
+#ifdef _WIN32
+      void sleep(UINT milliseconds);
+#else
+      void sleep(long milliseconds);
+#endif
+
+#ifdef _WIN32
+      High_Precision_Timer();
+      ~High_Precision_Timer();
+#endif
+    };
+
+    // Source: github.com/untyper/semaphores-and-shared-memory-classes
+    // Simple cross platform Semaphore class for Unix and Windows
+    class Semaphore
+    {
+      std::string name;
+
+#ifdef _WIN32
+      HANDLE object{ nullptr };
+#else
+      sem_t* object{ nullptr };
+#endif
+
+    public:
+      // Getters
+      const std::string& get_name() const;
+
+#ifdef _WIN32
+      HANDLE get_object() const;
+#else
+      sem_t* get_object() const;
+#endif
+
+      void close();
+      bool wait(unsigned int timeout_ms) const;
+      bool increment() const;
+      bool create(const std::string& name, int initial_count = 0);
+
+      // Constructor
+      Semaphore(const std::string& name, int initial_count = 0);
+
+      // Ask compiler to generate these for us
+      Semaphore(const Semaphore&) = default;            // Copy constructor
+      Semaphore& operator=(const Semaphore&) = default; // Copy assignment
+      Semaphore(Semaphore&&) = default;                 // Move constructor
+      Semaphore& operator=(Semaphore&&) = default;      // Move assignment
+
+      Semaphore() {} // Default constructor
+      ~Semaphore();
+    };
+
+    // Source: github.com/untyper/semaphores-and-shared-memory-classes
+    // Simple cross platform Shared_Memory class for Unix and Windows
+    class Shared_Memory
+    {
+      std::string name;
+      std::size_t size{ 0 };
+      void* address{ nullptr };
+
+#ifdef _WIN32
+      HANDLE file_mapping{ nullptr };
+#else
+      int file_mapping{ -1 };
+#endif
+
+      void* map();
+
+    public:
+      // Getters
+      const std::string& get_name() const;
+      std::size_t get_size() const;
+      void* get_address() const;
+#ifdef _WIN32
+      HANDLE get_file_mapping() const;
+#else
+      int get_file_mapping() const;
+#endif
+
+
+      void close();
+      bool create(const std::string& name, std::size_t size);
+
+      // Constructor
+      Shared_Memory(const std::string& name, std::size_t size);
+
+      // Ask compiler to generate these for us
+      Shared_Memory(const Shared_Memory&) = default;            // Copy constructor
+      Shared_Memory& operator=(const Shared_Memory&) = default; // Copy assignment
+      Shared_Memory(Shared_Memory&&) = default;                 // Move constructor
+      Shared_Memory& operator=(Shared_Memory&&) = default;      // Move assignment
+
+      Shared_Memory() {} // Default constructor
+      ~Shared_Memory();
+    };
+
+    // Source: github.com/untyper/thread-safe-array
+    template <typename T, std::size_t Capacity>
+    class Safe_Array
+    {
+    private:
+      struct Entry
+      {
+        std::shared_ptr<T> value{ nullptr };
+        std::atomic<std::size_t> next_free_index{ 0 };
+      };
+
+      std::array<Entry, Capacity> data;
+      std::atomic<uint64_t> free_list_head; // Stores index and counter
+      static constexpr std::size_t INVALID_INDEX = Capacity;
+
+      // Helper functions to pack and unpack index and counter
+      uint64_t pack_index_counter(std::size_t index, std::size_t counter) const
+      {
+        return (static_cast<uint64_t>(counter) << 32) | index;
+      }
+
+      void unpack_index_counter(uint64_t value, std::size_t& index, std::size_t& counter) const
+      {
+        index = static_cast<std::size_t>(value & 0xFFFFFFFF);
+        counter = static_cast<std::size_t>(value >> 32);
+      }
+
+      // Push an index onto the free list
+      void push_free_index(std::size_t index)
+      {
+        uint64_t old_head_value = this->free_list_head.load(std::memory_order_relaxed);
+        uint64_t new_head_value;
+        std::size_t old_head_index, old_head_counter;
+
+        do
+        {
+          unpack_index_counter(old_head_value, old_head_index, old_head_counter);
+
+          // Set the next_free_index in the Entry to the old head index
+          this->data[index].next_free_index.store(old_head_index, std::memory_order_relaxed);
+
+          // Prepare new head value with the new index and incremented counter
+          std::size_t new_counter = old_head_counter + 1;
+          new_head_value = pack_index_counter(index, new_counter);
+        } while (!this->free_list_head.compare_exchange_weak(
+          old_head_value, new_head_value, std::memory_order_release, std::memory_order_relaxed));
+      }
+
+      // Pop an index from the free list
+      bool pop_free_index(std::size_t& index)
+      {
+        uint64_t old_head_value = this->free_list_head.load(std::memory_order_relaxed);
+        uint64_t new_head_value;
+        std::size_t old_head_index, old_head_counter;
+
+        do
+        {
+          unpack_index_counter(old_head_value, old_head_index, old_head_counter);
+
+          if (old_head_index == INVALID_INDEX)
+          {
+            return false; // Free list is empty
+          }
+
+          index = old_head_index;
+
+          // Load the next index from the Entry
+          std::size_t next_index = this->data[index].next_free_index.load(std::memory_order_relaxed);
+
+          // Prepare new head value with next_index and incremented counter
+          std::size_t new_counter = old_head_counter + 1;
+          new_head_value = pack_index_counter(next_index, new_counter);
+
+          if (this->free_list_head.compare_exchange_weak(
+            old_head_value, new_head_value, std::memory_order_acquire, std::memory_order_relaxed))
+          {
+            return true;
+          }
+        } while (true);
+      }
+
+      bool erase_unchecked(std::size_t index, std::shared_ptr<T>& expected)
+      {
+        while (expected)
+        {
+          if (std::atomic_compare_exchange_weak(
+            &this->data[index].value,
+            &expected,
+            std::shared_ptr<T>(nullptr)))
+          {
+            // The shared_ptr destructor will handle deletion when no references remain
+            this->push_free_index(index);
+            return true; // Successfully erased
+          }
+          // If compare_exchange_weak fails, value_container is updated to the current value
+        }
+
+        return false; // Element was already null or erased by another thread
+      }
+
+    public:
+      struct Op_Result
+      {
+        std::size_t index{ 0 };
+        T& value;
+      };
+
+      // Add an element to the array using perfect forwarding
+      template<typename... Args>
+      std::optional<Op_Result> insert(Args&&... args)
+      {
+        std::size_t index;
+
+        if (!this->pop_free_index(index))
+        {
+          return std::nullopt; // Array is full
+        }
+
+        // Create a shared_ptr<T> by perfectly forwarding the arguments
+        std::shared_ptr<T> new_value = std::make_shared<T>(std::forward<Args>(args)...);
+
+        // Try to set the value atomically
+        std::shared_ptr<T> expected = nullptr;
+
+        if (!std::atomic_compare_exchange_strong(
+          &this->data[index].value,
+          &expected,
+          new_value))
+        {
+          // Failed to set the value; someone else may have set it
+          // Do not push the index back into the free list, as it is now in use
+          return std::nullopt;
+        }
+
+        return Op_Result{ index, *new_value };
+      }
+
+      // Find an element based on a predicate, returning its index
+      template <typename Predicate>
+      std::optional<Op_Result> find_if(Predicate predicate) const
+      {
+        for (std::size_t i = 0; i < Capacity; ++i)
+        {
+          std::shared_ptr<T> element = std::atomic_load(&this->data[i].value);
+
+          if (element && predicate(*element))
+          {
+            return Op_Result{ i, *element };
+          }
+        }
+
+        return std::nullopt; // Element not found
+      }
+
+      // Find an element directly by value, returning its index
+      std::optional<Op_Result> find(const T& value) const
+      {
+        return this->find_if([&value](const T& element) { return element == value; });
+      }
+
+      // Remove an element based on its index
+      bool erase(std::size_t index)
+      {
+        if (index >= Capacity)
+        {
+          return false; // Invalid index
+        }
+
+        std::shared_ptr<T> expected = std::atomic_load(&this->data[index].value);
+        return this->erase_unchecked(index, expected);
+      }
+
+      // Overload of erase to remove an element by reference
+      bool erase(const T& value)
+      {
+        for (std::size_t i = 0; i < Capacity; ++i)
+        {
+          // Load the current shared_ptr atomically
+          std::shared_ptr<T> current = std::atomic_load(&this->data[i].value);
+
+          // Check if the reference matches the current element
+          if (current && *current == value)
+          {
+            // Call the existing erase method using the index
+            return this->erase_unchecked(i, current);
+          }
+        }
+
+        return false; // Element not found
+      }
+
+      // Retrieve an element at the given index
+      std::optional<Op_Result> at(std::size_t index) const
+      {
+        if (index >= Capacity)
+        {
+          return std::nullopt; // Invalid index
+        }
+
+        std::shared_ptr<T> element = std::atomic_load(&this->data[index].value);
+
+        if (element)
+        {
+          return Op_Result{ index, *element }; // Return a copy of T
+        }
+
+        return std::nullopt; // Element is null
+      }
+
+      // Get the current size of the array
+      std::size_t size() const
+      {
+        std::size_t count = 0;
+
+        for (std::size_t i = 0; i < Capacity; ++i)
+        {
+          if (std::atomic_load(&this->data[i].value))
+          {
+            ++count;
+          }
+        }
+
+        return count;
+      }
+
+      std::size_t capacity() const
+      {
+        return Capacity;
+      }
+
+      Safe_Array()
+      {
+        // Initialize the free list
+        for (std::size_t i = 0; i < Capacity - 1; ++i)
+        {
+          this->data[i].next_free_index.store(i + 1, std::memory_order_relaxed);
+        }
+
+        this->data[Capacity - 1].next_free_index.store(INVALID_INDEX, std::memory_order_relaxed);
+
+        // Initialize free_list_head with the initial index and counter 0
+        this->free_list_head.store(pack_index_counter(0, 0), std::memory_order_relaxed);
+      }
+    };
+
+    // Source: github.com/untyper/mpmc-shared-queue
+    template <typename T>
+    class Shared_Queue
+    {
+    private:
+      struct alignas(64) Buffer_Slot
+      {
+        T data;
+        std::atomic<bool> is_important;
+        Buffer_Slot() : is_important(false) {}
+      };
+
+      struct Shared_Control_Block
+      {
+        std::atomic<std::size_t> head; // Consumer position
+        std::atomic<std::size_t> tail; // Producer position
+        std::size_t capacity{ 0 };     // Capacity of the buffer
+      };
+
+      Shared_Control_Block* control_block{ nullptr }; // Shared control block
+      Buffer_Slot* buffer{ nullptr };                 // Circular buffer slots
+
+      std::size_t wrap(std::size_t index) const
+      {
+        return index % this->control_block->capacity;
+      }
+
+    public:
+      static constexpr std::size_t get_control_block_size()
+      {
+        return sizeof(Shared_Control_Block);
+      }
+
+      // Check if the buffer is empty
+      bool is_empty() const
+      {
+        return this->control_block->head.load(std::memory_order_acquire) == this->control_block->tail.load(std::memory_order_acquire);
+      }
+
+      // Approximate size of the buffer
+      std::size_t size_approx() const
+      {
+        std::size_t current_head = this->control_block->head.load(std::memory_order_acquire);
+        std::size_t current_tail = this->control_block->tail.load(std::memory_order_acquire);
+        return (current_tail >= current_head) ? (current_tail - current_head)
+          : (this->control_block->capacity - (current_head - current_tail));
+      }
+
+      // Enqueue a new item
+      bool enqueue(const T& item, bool important = false)
+      {
+        std::size_t pos = this->control_block->tail.load(std::memory_order_relaxed);
+        std::size_t next_pos = wrap(pos + 1);
+
+        if (next_pos == this->control_block->head.load(std::memory_order_acquire))
+        {
+          // Queue is full; search for a non-important slot to overwrite
+          std::size_t search_pos = this->control_block->head.load(std::memory_order_relaxed);
+          bool found_non_important = false;
+
+          for (std::size_t i = 0; i < this->control_block->capacity; ++i)
+          {
+            Buffer_Slot& candidate_slot = this->buffer[wrap(search_pos)];
+
+            if (!candidate_slot.is_important.load(std::memory_order_acquire))
+            {
+              found_non_important = true;
+              break;
+            }
+
+            search_pos = wrap(search_pos + 1);
+          }
+
+          if (found_non_important)
+          {
+            // Move head to free up the non-important slot
+            this->control_block->head.store(wrap(this->control_block->head.load(std::memory_order_relaxed) + 1), std::memory_order_release);
+          }
+          else
+          {
+            // No non-important slots found; overwrite the oldest important slot
+            this->control_block->head.store(wrap(this->control_block->head.load(std::memory_order_relaxed) + 1), std::memory_order_release);
+          }
+        }
+
+        // Write data to the current tail
+        this->buffer[wrap(pos)].data = item;
+        this->buffer[wrap(pos)].is_important.store(important, std::memory_order_release);
+        this->control_block->tail.store(next_pos, std::memory_order_release);
+
+        return true;
+      }
+
+      // Dequeue an item
+      bool dequeue(T* item, bool* important)
+      {
+        std::size_t pos = this->control_block->head.load(std::memory_order_relaxed);
+
+        if (pos == this->control_block->tail.load(std::memory_order_acquire))
+        {
+          // Queue is empty
+          return false;
+        }
+
+        *item = this->buffer[wrap(pos)].data;
+        *important = this->buffer[wrap(pos)].is_important.load(std::memory_order_relaxed);
+        this->control_block->head.store(wrap(pos + 1), std::memory_order_release);
+
+        return true;
+      }
+
+      bool create(void* shared_memory, std::size_t shared_memory_size, std::size_t requested_capacity = 0)
+      {
+        std::size_t alignment = alignof(std::max_align_t);
+        std::size_t aligned_control_size = (sizeof(Shared_Control_Block) + alignment - 1) & ~(alignment - 1);
+
+        if (shared_memory_size < aligned_control_size)
+        {
+          //throw std::runtime_error("Insufficient shared memory size for control block.");
+          return false;
+        }
+
+        std::size_t buffer_space = shared_memory_size - aligned_control_size;
+        std::size_t capacity = requested_capacity ? requested_capacity : (buffer_space / sizeof(Buffer_Slot));
+
+        if (capacity == 0)
+        {
+          //throw std::runtime_error("Insufficient shared memory size for buffer slots.");
+          return false;
+        }
+
+        this->control_block = static_cast<Shared_Control_Block*>(shared_memory);
+        this->buffer = reinterpret_cast<Buffer_Slot*>(static_cast<char*>(shared_memory) + aligned_control_size);
+
+        if (this->control_block->capacity != capacity)
+        {
+          // Initialize control block and buffer
+          new (this->control_block) Shared_Control_Block();
+          this->control_block->head.store(0, std::memory_order_relaxed);
+          this->control_block->tail.store(0, std::memory_order_relaxed);
+          this->control_block->capacity = capacity;
+
+          for (std::size_t i = 0; i < capacity; ++i)
+          {
+            new (&this->buffer[i]) Buffer_Slot();
+            this->buffer[i].is_important.store(false, std::memory_order_relaxed);
+          }
+        }
+
+        return true;
+      }
+
+      explicit Shared_Queue(void* shared_memory, std::size_t shared_memory_size, std::size_t requested_capacity = 0)
+      {
+        this->create(shared_memory, shared_memory_size, requested_capacity);
+      }
+
+      // Default constructor
+      Shared_Queue() {}
+    };
+  } // namespace _detail
+
+#ifdef SMM_WIN_UWP
+  // Helper to convert std::string to std::string for UWP specifics
+  std::wstring string_to_wstring(const std::string& utf8_string);
+#endif
+
+  // Base class for all messages.
+  // Use this to discern id of message before
+  // casting the buffer to the correct id for reading...
+  struct Message
   {
-    std::unique_ptr<T> data;
-    std::atomic<Node*> next;
+    int id{ 0 }; // 4 bytes
+    char content[SMM_MESSAGE_SIZE - sizeof(id)] = { 0 };
+    // Total content size should be equal to
+    // a standard page size i.e. ~4096 bytes
 
-    Node() : data(nullptr), next(nullptr) {}
+    int get_id()
+    {
+      return this->id;
+    }
 
-    template <typename U>
-    explicit Node(U&& value)
-      : data(std::make_unique<T>(std::forward<U>(value))), next(nullptr) {}
+    template <typename T>
+    T get_content_as()
+    {
+      return *reinterpret_cast<T*>(this->content);
+    }
+
+    template <typename T>
+    void set_content_as(int id, T content)
+    {
+      this->id = id;
+      *reinterpret_cast<T*>(this->content) = content;
+    }
+
+    // Constructors
+    template <typename T>
+    Message(int id, T content)
+    {
+      this->set_content_as(id, content);
+    }
+
+    Message() {}
   };
 
-  std::atomic<int> node_count = 0;
-  std::atomic<Node*> tail;
-  Node* head;
-
-  // For cleaning up any existing nodes in the current queue upon exiting
-  void clear_nodes()
+  namespace _detail
   {
-    Node* current = this->head;
-
-    while (current)
+    struct Message_Connection
     {
-      Node* next_node = current->next.load(std::memory_order_relaxed);
-      delete current;
-      current = next_node;
-    }
-  }
+      SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION;
+      int sender_id = SMM_SENDER_ID_UNKNOWN;
 
-public:
-  // Return current size of the queue
-  int size()
-  {
-    return this->node_count.load();
-  }
+      Message_Connection(int sender_id)
+      {
+        this->sender_id = sender_id;
+      }
 
-  // Enqueue function accepting both copyable and movable types
-  template <typename U>
-  void enqueue(U&& value)
-  {
-    Node* new_node = new Node(std::forward<U>(value));
-    Node* prev_tail = this->tail.exchange(new_node, std::memory_order_acq_rel);
-    prev_tail->next.store(new_node, std::memory_order_release);
-    this->node_count.fetch_add(1); // Increment size counter
-  }
+      friend struct Message;
+    };
 
-  // Consumer calls this to dequeue data
-  std::unique_ptr<T> dequeue()
-  {
-    Node* next_node = this->head->next.load(std::memory_order_acquire);
-
-    if (!next_node)
+    struct Message_Connection_Response
     {
-      return nullptr; // Queue is empty
+      SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION_RESPONSE;
+      bool success = false;
+
+      Message_Connection_Response(bool success)
+      {
+        this->success = success;
+      }
+    };
+
+    struct Message_Disconnection
+    {
+      SMM_MESSAGE_ID = SMM_MESSAGE_ID_DISCONNECTION;
+      int sender_id = SMM_SENDER_ID_UNKNOWN;
+      int reason = SMM_DISCONNECTION_NORMAL;
+
+      Message_Disconnection(int sender_id, int reason = SMM_DISCONNECTION_NORMAL)
+      {
+        this->sender_id = sender_id;
+        this->reason = reason;
+      }
+
+      friend struct Message;
+    };
+
+    // Container for message and it's metadata
+    struct Message_Packet
+    {
+      int sender_id = 0;
+      Message message;
+    };
+
+    // Forward declarations internal implementation
+    class _Channel;
+    class _Client;
+    class _Server;
+  } // namespace _detail
+
+  // Forward declarations user-interface
+  class Client;
+  class Server;
+  class Connection;
+
+#ifdef _WIN32
+  using listening_interval_t = UINT;
+#else
+  using listening_interval_t = long;
+#endif
+
+  using connection_handler_t = std::function<void(Connection&)>;
+  using disconnection_handler_t = std::function<void(Client&)>;
+  using message_handler_t = std::function<void(Client&, Message&)>;
+
+  class Client
+  {
+  protected:
+    std::shared_ptr<_detail::_Client> shared = nullptr;
+
+  public:
+    int get_id() const;
+    bool is_connected() const;
+    void diconnect(int reason = SMM_DISCONNECTION_NORMAL);
+
+    void send(Message* message);
+    void send(Message message);
+
+    template <typename T, typename... Args>
+    void send(Args... args);
+
+    // TODO: Move assignment operator
+    // TODO: Move constructor
+
+    Client(const std::shared_ptr<_detail::_Client>& shared);
+    Client& operator=(const Client& other);
+    Client(const Client& other);
+    Client() {}
+
+    //friend class Safe_Array;
+    friend class Server;
+    friend class _detail::_Channel;
+    friend class _detail::_Client;
+    friend class _detail::_Server;
+  };
+
+  class Server
+  {
+  protected:
+    std::shared_ptr<_detail::_Server> shared = nullptr;
+
+  public:
+    bool is_thread_running();
+    bool is_open();
+    std::vector<Client> get_clients();
+    const message_handler_t& get_handler();
+
+    bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+    std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+
+    void on_connection(connection_handler_t connection_handler);
+    void on_disconnection(disconnection_handler_t disconnection_handler);
+
+    std::optional<Client> connect(int target_id);
+    std::future<std::optional<Client>> connect_async(int target_id);
+
+    void close();
+    std::future<void> close_async();
+
+    bool create(int id, message_handler_t message_handler = nullptr);
+
+    Server(int id, message_handler_t message_handler = nullptr);
+    Server() {}
+
+    friend class Client;
+    friend class _detail::_Channel;
+    friend class _detail::_Client;
+    friend class _detail::_Server;
+  };
+
+  // For handling connections manually
+  class Connection
+  {
+  protected:
+    bool handled{ false };
+    int id{ 0 };
+    _detail::_Server* server{ nullptr };
+
+  public:
+    int get_id() const;
+
+    std::optional<Client> accept();
+    void reject();
+
+    Connection(int id, _detail::_Server* server) :
+      id(id),
+      server(server)
+    {
     }
 
-    std::unique_ptr<T> result = std::move(next_node->data);
-    delete this->head;
-    this->head = next_node;
+    Connection() {};
 
-    // Decrement size counter and return queued entry
-    this->node_count.fetch_sub(1);
-    return result;
+    friend class _detail::_Server;
+  };
+
+  namespace _detail
+  {
+    class _Channel
+    {
+    protected:
+      Semaphore received_signal;
+      Shared_Memory shared_memory;
+      Shared_Queue<Message_Packet> message_queue;
+
+      // True if CreateEventObject() and CreateMapping() both succeed, false otherwise
+      bool channel_created = false;
+      int id = -1;
+
+      bool create_channel(int id);
+
+    public:
+      bool is_channel_created() const;
+      int get_id() const;
+      void close();
+
+      _Channel() {}
+      _Channel(int id);
+
+      friend class Client;
+      friend class Server;
+      friend class _Client;
+      friend class _Server;
+    };
+
+    class _Client : public _Channel
+    {
+    protected:
+      std::atomic<bool> connected = false;
+      _Server* server = nullptr;
+
+      bool open(int id);
+
+    public:
+      int get_id() const;
+      bool is_connected() const;
+      void diconnect(int reason = SMM_DISCONNECTION_NORMAL);
+
+      void send(Message* message);
+
+      template <typename T, typename... Args>
+      void send(Args... args);
+
+      _Client() {}
+      _Client(int id, _Server* server);
+
+      friend class Client;
+      friend class Server;
+      friend class _Channel;
+      friend class _Server;
+    };
+
+    class _Server : public _Channel
+    {
+    protected:
+      std::future<bool> listening_thread;
+
+      std::atomic<bool> listening_async = false;
+      std::atomic<bool> listening_loop_running = false;
+      std::atomic<bool> open = false;
+
+      Safe_Array<Client, SMM_MAX_CLIENTS_PER_SERVER> clients;
+
+      connection_handler_t connection_handler;
+      disconnection_handler_t disconnection_handler;
+      message_handler_t message_handler;
+
+      void _message_handler(int sender_id, Message& message);
+      void listening_loop(listening_interval_t interval);
+
+    public:
+      bool is_thread_running();
+      bool is_open();
+      const message_handler_t& get_handler();
+
+      bool listen(message_handler_t message_handler, listening_interval_t interval = 1);
+      std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+
+      void on_connection(connection_handler_t& connection_handler);
+      void on_disconnection(disconnection_handler_t& disconnection_handler);
+
+      std::optional<Client> connect(int target_id);
+      std::future<std::optional<Client>> connect_async(int target_id);
+
+      void close();
+      std::future<void> close_async();
+
+      bool create(int id, message_handler_t message_handler = nullptr);
+
+      _Server& operator=(const _Server&) = delete;
+      _Server& operator=(_Server&& other) noexcept;
+      _Server(const _Server&) = delete;
+      _Server(_Server&& other) noexcept;
+      _Server() {};
+      ~_Server();
+
+      _Server(int id, message_handler_t message_handler = nullptr);
+
+      friend class Client;
+      friend class Server;
+      friend class Connection;
+
+      friend class _Channel;
+      friend class _Client;
+    };
+  } // namespace _detail
+
+  // ********** Definitions **********
+
+#ifdef SMM_WIN_UWP
+  inline std::wstring string_to_wstring(const std::string& utf8_string)
+  {
+    // Determine the size of the resulting wide string
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, NULL, 0);
+
+    // Create a wide string to hold the converted result
+    std::wstring wide_string(size_needed - 1, 0); // size_needed includes null terminator, so exclude it
+
+    // Perform the conversion
+    MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, &wide_string[0], size_needed);
+
+    return wide_string;
+  }
+#endif
+
+  namespace _detail
+  {
+#ifdef _WIN32
+    void CALLBACK High_Precision_Timer::timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2)
+    {
+      // Access the event handle through the instance pointer
+      High_Precision_Timer* instance = reinterpret_cast<High_Precision_Timer*>(dw_user);
+      SetEvent(instance->timer_event); // Signal the event to unblock nano_sleep
+    }
+
+    // High-resolution sleep function without busy-waiting
+    inline void High_Precision_Timer::sleep(UINT milliseconds)
+    {
+      if (!this->timer_event)
+      {
+        return;
+      }
+
+      // Reset the event
+      ResetEvent(this->timer_event);
+
+      // Start a one-shot timer with the specified delay
+      MMRESULT timer_id = timeSetEvent(
+        milliseconds, 1, timer_proc, reinterpret_cast<DWORD_PTR>(this), TIME_ONESHOT
+      );
+
+      if (timer_id == 0)
+      {
+        return;
+      }
+
+      // Wait for the timer event to be signaled
+      WaitForSingleObject(this->timer_event, INFINITE);
+
+      // Clean up the timer
+      timeKillEvent(timer_id);
+    }
+
+#else // Unix
+    inline void High_Precision_Timer::sleep(long milliseconds)
+    {
+      struct timespec req, rem;
+      req.tv_sec = milliseconds / 1000;                // Convert milliseconds to seconds
+      req.tv_nsec = (milliseconds % 1000) * 1'000'000; // Convert remaining milliseconds to nanoseconds
+      nanosleep(&req, &rem);
+    }
+#endif
+
+#ifdef _WIN32
+    inline High_Precision_Timer::High_Precision_Timer()
+    {
+      // Set timer resolution to 1 ms for high accuracy
+      timeBeginPeriod(1);
+
+      // Create an event for synchronization
+      this->timer_event = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset event
+
+      if (!this->timer_event)
+      {
+      }
+    }
+
+    inline High_Precision_Timer::~High_Precision_Timer()
+    {
+      // Close the event handle and restore the timer resolution
+      if (this->timer_event)
+      {
+        CloseHandle(this->timer_event);
+      }
+
+      timeEndPeriod(1);
+    }
+#endif
+
+    // Semaphore
+
+    inline const std::string& Semaphore::get_name() const
+    {
+      return this->name;
+    }
+
+#ifdef _WIN32
+    HANDLE Semaphore::get_object() const
+#else
+    sem_t* Semaphore::get_object() const
+#endif
+    {
+      return this->object;
+    }
+
+    inline void Semaphore::close()
+    {
+      if (this->object == nullptr)
+      {
+        return;
+      }
+
+#ifdef _WIN32
+      CloseHandle(this->object);
+#else
+      sem_close(this->object);
+
+      if (!this->name.empty())
+      {
+        sem_unlink(this->name.data());
+      }
+#endif
+
+      // Clear members
+      this->object = nullptr;
+      this->name.clear();
+    }
+
+    inline bool Semaphore::wait(unsigned int timeout_ms) const
+    {
+      if (this->object == nullptr)
+      {
+        return false;
+      }
+
+#ifdef _WIN32
+      DWORD result = WaitForSingleObject(this->object, timeout_ms);
+      return result == WAIT_OBJECT_0;
+#else
+      if (timeout_ms == INFINITE)
+      {
+        return sem_wait(this->object) == 0;
+      }
+      else
+      {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += timeout_ms / 1000;
+        ts.tv_nsec += (timeout_ms % 1000) * 1000000;
+
+        if (ts.tv_nsec >= 1000000000)
+        {
+          ts.tv_sec += 1;
+          ts.tv_nsec -= 1000000000;
+        }
+
+        return sem_timedwait(this->object, &ts) == 0;
+      }
+#endif
+    }
+
+    inline bool Semaphore::increment() const
+    {
+      if (this->object == nullptr)
+      {
+        return false;
+      }
+
+#ifdef _WIN32
+      return ReleaseSemaphore(this->object, 1, nullptr);
+#else
+      return sem_post(this->object) == 0;
+#endif
+    }
+
+    inline bool Semaphore::create(const std::string& name, int initial_count)
+    {
+      if (name.empty())
+      {
+        return false;
+      }
+
+      this->name = name;
+
+#ifdef _WIN32
+      this->object = CreateSemaphoreA(nullptr, initial_count, LONG_MAX, name.data());
+      return this->object != nullptr;
+#else
+      this->object = sem_open(name.data(), O_CREAT, 0666, initial_count);
+      return this->object != SEM_FAILED;
+#endif
+    }
+
+    inline Semaphore::Semaphore(const std::string& name, int initial_count)
+    {
+      this->create(name, initial_count);
+    }
+
+    inline Semaphore::~Semaphore()
+    {
+      this->close();
+    }
+
+    // Shared_Memory
+
+    inline const std::string& Shared_Memory::get_name() const
+    {
+      return this->name;
+    }
+
+    inline std::size_t Shared_Memory::get_size() const
+    {
+      return this->size;
+    }
+
+    inline void* Shared_Memory::get_address() const
+    {
+      return this->address;
+    }
+
+#ifdef _WIN32
+    inline HANDLE Shared_Memory::get_file_mapping() const
+#else
+    inline int Shared_Memory::get_file_mapping() const
+#endif
+    {
+      return this->file_mapping;
+    }
+
+    inline void Shared_Memory::close()
+    {
+#ifdef _WIN32
+      if (this->file_mapping == nullptr)
+#else
+      if (this->file_mapping == -1)
+#endif
+      {
+        return;
+      }
+
+#ifdef _WIN32
+      if (this->address != nullptr)
+      {
+        UnmapViewOfFile(this->address);
+      }
+
+      CloseHandle(this->file_mapping);
+#else
+      if (this->address != nullptr)
+      {
+        munmap(this->address, this->size);
+      }
+
+      close(this->file_mapping);
+
+      if (!this->name.empty())
+      {
+        shm_unlink(this->name.data());
+      }
+#endif
+
+      // Finally clear members
+      this->name.clear();
+      this->size = 0;
+      this->address = nullptr;
+
+#ifdef _WIN32
+      this->file_mapping = nullptr;
+#else
+      this->file_mapping = -1;
+#endif
+    }
+
+    inline void* Shared_Memory::map()
+    {
+      if (this->file_mapping == nullptr)
+      {
+        return nullptr;
+      }
+
+      if (this->size == 0)
+      {
+        return nullptr;
+      }
+
+#ifdef _WIN32
+#ifdef SMM_WIN_UWP
+      void* address = MapViewOfFileFromApp(this->file_mapping, FILE_MAP_ALL_ACCESS, 0, this->size); // Or size = 0
+#else
+      void* address = MapViewOfFile(this->file_mapping, FILE_MAP_ALL_ACCESS, 0, 0, this->size); // Or size = 0
+#endif
+
+      if (address == nullptr)
+      {
+        CloseHandle(this->file_mapping); // Cleanup handle
+        this->file_mapping = nullptr;
+      }
+
+      return address;
+#else
+      void* address = mmap(nullptr, this->size, PROT_READ | PROT_WRITE, MAP_SHARED, this->file_mapping, 0);
+
+      if (address == MAP_FAILED)
+      {
+        close(this->file_mapping); // Cleanup file descriptor
+        this->file_mapping = -1;
+        return nullptr;
+      }
+
+      return address;
+#endif
+    }
+
+    inline bool Shared_Memory::create(const std::string& name, std::size_t size)
+    {
+      if (name.empty())
+      {
+        return false;
+      }
+
+      if (size == 0)
+      {
+        return false;
+      }
+
+      this->name = name;
+      this->size = size;
+
+#ifdef _WIN32
+#ifdef SMM_WIN_UWP
+      this->file_mapping = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, size, string_to_wstring(name).data());
+#else
+      this->file_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, name.data());
+#endif
+      // return this->file_mapping != nullptr;
+#else
+      int shm_fd = shm_open(name.data(), O_CREAT | O_RDWR, 0666);
+
+      if (shm_fd == -1)
+      {
+        return false;
+      }
+
+      if (ftruncate(shm_fd, size) == -1)
+      {
+        close(shm_fd);
+        shm_unlink(name.data());
+        return false;
+      }
+
+      this->file_mapping = shm_fd;
+      // return true;
+#endif
+
+      // Now map to memory
+      this->address = this->map();
+      return this->address != nullptr;
+    }
+
+    inline Shared_Memory::Shared_Memory(const std::string& name, std::size_t size)
+    {
+      this->create(name, size);
+    }
+
+    inline Shared_Memory::~Shared_Memory()
+    {
+      this->close();
+    }
+
+    // _Channel, base of _Client and _Server
+
+    // Create communication channel (event object and shared memory)
+    // This should only be called once.
+    // Check is_channel_created() to see if that's the case.
+    inline bool _Channel::create_channel(int id)
+    {
+      std::string id_string = std::to_string(id);
+
+      // TODO: PREFIX WITH GUID PATH FOR DEEPER SANDBOXING
+      std::string file_mapping_name = id_string + ".mapping";
+      std::string semaphore_name = id_string + ".signal";
+
+      constexpr int shared_memory_size =
+        Shared_Queue<Message_Packet>::get_control_block_size()
+        + SMM_MESSAGE_SIZE
+        * SMM_MAX_QUEUE_CAPACITY;
+
+      if (!this->shared_memory.create(file_mapping_name, shared_memory_size))
+      {
+        return false;
+      }
+
+      if (!this->received_signal.create(semaphore_name))
+      {
+        return false;
+      }
+
+      // Create a message queue in the newly created shared memory
+      this->message_queue.create(this->shared_memory.get_address(), shared_memory_size);
+
+      // Success! We should now have 'shared memory' communication ready to go.
+      this->id = id;
+      return (this->channel_created = true);
+    }
+
+    // Getter to check if event and mapping stuff have been created successfully
+    inline bool _Channel::is_channel_created() const
+    {
+      return this->channel_created;
+    }
+
+    inline int _Channel::get_id() const
+    {
+      return this->id;
+    }
+
+    inline void _Channel::close()
+    {
+      this->shared_memory.close();
+      this->received_signal.close();
+    }
+
+    // Constructor. ID must be unique
+    inline _Channel::_Channel(int id)
+    {
+      this->create_channel(id);
+    }
+  } // namespace _detail
+
+  inline bool Client::is_connected() const
+  {
+    return this->shared->is_connected();
   }
 
-  // Disable copy assignment operator
-  Message_Queue& operator=(const Message_Queue&) = delete;
+  inline int Client::get_id() const
+  {
+    return this->shared->get_id();
+  }
 
-  // Move assignment operator
-  Message_Queue& operator=(Message_Queue&& other) noexcept
+  inline void Client::diconnect(int reason)
+  {
+    this->shared->diconnect(reason);
+  }
+
+  inline void Client::send(Message* message)
+  {
+    this->shared->send(message);
+  }
+
+  inline void Client::send(Message message)
+  {
+    this->shared->send(&message);
+  }
+
+  template <typename T, typename... Args>
+  inline void Client::send(Args... args)
+  {
+    this->shared->send<T>(std::forward<Args>(args)...);
+  }
+
+  // TODO: Move assignment operator
+  // TODO: Move constructor
+
+  // Copy assignment operator
+  inline Client& Client::operator=(const Client& other)
   {
     // Avoid self-assignment
     if (this != &other)
     {
-      this->clear_nodes();
-
-      // Transfer ownership of nodes
-      node_count.store(other.node_count.load());
-      tail.store(other.tail.load(std::memory_order_relaxed), std::memory_order_relaxed);
-      this->head = other.head;
-
-      // Reset other to indicate moved-from state
-      other.node_count.store(0);
-      other.tail.store(nullptr, std::memory_order_relaxed);
-      other.head = nullptr;
+      this->shared = other.shared;
     }
 
     return *this;
   }
 
-  // Disable copy constructor
-  Message_Queue(const Message_Queue&) = delete;
-
-  // Move constructor
-  Message_Queue(Message_Queue&& other) noexcept :
-    node_count(other.node_count.load()),
-    tail(other.tail.load(std::memory_order_relaxed)),
-    head(other.head)
+  // Copy constructor
+  inline Client::Client(const Client& other) :
+    shared(other.shared)
   {
-    other.node_count.store(0);
-    other.tail.store(nullptr, std::memory_order_relaxed);
-    other.head = nullptr;
   }
 
-  Message_Queue()
+  inline Client::Client(const std::shared_ptr<_detail::_Client>& shared)
   {
-    // Create a dummy node to simplify enqueue/dequeue logic
-    Node* dummy = new Node();
-    this->head = dummy;
-    this->tail.store(dummy, std::memory_order_relaxed);
+    this->shared = shared;
   }
 
-  ~Message_Queue()
+  inline bool Server::is_thread_running()
   {
-    this->clear_nodes();
-  }
-};
-
-// Base class for all messages.
-// Use this to discern type of message before
-// casting the buffer to the correct type for reading...
-struct Message
-{
-  UINT type = 0; // 4 bytes
-  CHAR content[PAGE_SIZE - sizeof(UINT)] = {0};
-  // Total content size should be equal to
-  // a standard page size i.e. ~4096 bytes
-
-  UINT get_type()
-  {
-    return this->type;
+    return this->shared->is_thread_running();
   }
 
-  template <typename T>
-  T get_content_as()
+  inline bool Server::is_open()
   {
-    return *reinterpret_cast<T*>(this->content);
+    return this->shared->is_open();
   }
 
-  template <typename T>
-  void set_content_as(UINT type, T content)
+  // Converts Safe_Array to vector for idiomatic usage
+  inline std::vector<Client> Server::get_clients()
   {
-    this->type = type;
-    *reinterpret_cast<T*>(this->content) = content;
-  }
+    std::vector<Client> clients;
 
-  // Constructors
-  template <typename T>
-  Message(UINT type, T content)
-  {
-    this->set_content_as(type, content);
-  }
+    auto& safe_clients = this->shared->clients;
+    std::size_t capacity = safe_clients.capacity();
 
-  Message() {}
-};
-
-class Message_Object
-{
-private:
-  std::string name;
-  HANDLE object = NULL;
-
-public:
-  std::string& get_name();
-  HANDLE& get_object();
-};
-
-using Message_Event = Message_Object;
-
-class Message_Mapping : public Message_Object
-{
-private:
-  PVOID address = NULL; // byte to byte file mapping object's address
-
-public:
-  PVOID& get_address();
-};
-
-class Messaging_Channel
-{
-protected:
-  // True if CreateEventObject() and CreateMapping() both succeed, false otherwise
-  bool channel_created = false;
-  std::string id;
-
-  Message_Event sent;
-  Message_Event emptied;
-  Message_Mapping mapping;
-
-  // Member functions below
-  bool create_event_objects();
-  bool create_mapping();
-  void create_channel(std::string id);
-
-public:
-  bool is_channel_created();
-  const std::string& get_id();
-  void close();
-
-  Messaging_Channel(std::string id);
-  Messaging_Channel() {}
-};
-
-class Message_Receiver : public Messaging_Channel
-{
-public:
-  // Getters
-  Message_Event& get_sent_event();
-  Message_Event& get_emptied_event();
-  Message_Mapping& get_mapping();
-
-  void open(std::string id);
-
-  Message_Receiver(std::string id);
-  Message_Receiver() {}
-};
-
-struct Message_Info
-{
-  Message_Receiver receiver;
-  Message message;
-  std::atomic<int> send_attempts = 0;
-
-  // Compiler won't generate move/copy semantics for us so we must do it ourselves
-  Message_Info& operator=(Message_Info&& other) noexcept;
-  Message_Info& operator=(const Message_Info& other);
-
-  Message_Info(Message_Info&& other) noexcept;
-  Message_Info(const Message_Info& other);
-  Message_Info(Message_Receiver receiver, Message data);
-  Message_Info() {}
-};
-
-class Message_Client : public Messaging_Channel
-{
-protected:
-  std::thread sender_thread;
-  std::thread receiver_thread;
-
-  std::atomic<bool> is_sender_thread_running = false;
-  std::atomic<bool> is_receiver_thread_running = false;
-  std::atomic<int> max_send_attempts = MAX_SEND_ATTEMPTS;
-
-  Message_Event enqueued;
-  Message_Queue<Message_Info> send_queue;
-  std::function<void(Message)> handler;
-
-  // Member functions below
-  bool create_enqueue_signaling(std::string id);
-  bool send_enqueued_signal();
-  void wait_for_enqueued_signal();
-
-  void sender_loop();
-  void receiver_loop();
-  void start_sender_loop();
-  void start_receiver_loop();
-
-public:
-  bool is_thread_running();
-  void send(Message_Receiver receiver, Message data);
-  void set_handler(std::function<void(Message)> handler);
-  void create(std::string id, std::function<void(Message)> handler = nullptr);
-  void close(); // Override
-
-  Message_Client& operator=(const Message_Client&) = delete;
-  Message_Client& operator=(Message_Client&& other) noexcept;
-
-  Message_Client(const Message_Client&) = delete;
-  Message_Client(Message_Client&& other) noexcept;
-  Message_Client(std::string id, std::function<void(Message)> handler = nullptr);
-  Message_Client() {};
-  ~Message_Client();
-};
-
-// ********** Definitions **********
-
-#ifdef SMM_UWP
-inline std::wstring string_to_wstring(const std::string& utf8_string)
-{
-  // Determine the size of the resulting wide string
-  int size_needed = MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, NULL, 0);
-
-  // Create a wide string to hold the converted result
-  std::wstring wide_string(size_needed - 1, 0); // size_needed includes null terminator, so exclude it
-
-  // Perform the conversion
-  MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, &wide_string[0], size_needed);
-
-  return wide_string;
-}
-#endif
-
-inline std::string& Message_Object::get_name()
-{
-  return this->name;
-}
-
-inline HANDLE& Message_Object::get_object()
-{
-  return this->object;
-}
-
-inline PVOID& Message_Mapping::get_address()
-{
-  return this->address;
-}
-
-// Member functions below
-inline bool Messaging_Channel::create_event_objects()
-{
-  if (!(this->sent.get_object() = CreateEventA(NULL, FALSE, FALSE, this->sent.get_name().data())))
-  {
-    return false; // Failed to create event object
-  }
-
-  if (!(this->emptied.get_object() = CreateEventA(NULL, FALSE, TRUE, this->emptied.get_name().data())))
-  {
-    return false; // Failed to create event object
-  }
-
-  // Successfully created event objects.
-  // We can now send signals to other processes.
-  return true;
-}
-
-inline bool Messaging_Channel::create_mapping()
-{
-  // We are using INVALID_HANDLE_VALUE for handle to use a mapping object
-  // backed by a system paging file so that we don't have to create a file manually
-
-  ULONG64 size = sizeof(Message); // In bytes
-  HANDLE& mapping_object = this->mapping.get_object();
-
-#ifdef SMM_UWP
-  if (!(mapping_object = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, size, string_to_wstring(this->mapping.get_name()).data())))
-#else
-  if (!(mapping_object = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, size, this->mapping.get_name().data())))
-#endif
-  {
-    return false; // Failed to create mapping object
-  }
-
-#ifdef SMM_UWP
-  if (!(this->mapping.get_address() = MapViewOfFileFromApp(mapping_object, FILE_MAP_ALL_ACCESS, 0, 0)))
-#else
-  if (!(this->mapping.get_address() = MapViewOfFile(mapping_object, FILE_MAP_ALL_ACCESS, 0, 0, 0)))
-#endif
-  {
-    CloseHandle(mapping_object);
-    return false; // Failed to map to memory
-  }
-
-  // Successfully mapped file to memory.
-  // We should now have 'shared memory' communication ready to go.
-  return true;
-}
-
-// Getter to check if event and mapping stuff have been created successfully
-inline bool Messaging_Channel::is_channel_created()
-{
-  return this->channel_created;
-}
-
-inline const std::string& Messaging_Channel::get_id()
-{
-  return this->id;
-}
-
-// Create communication channel (event object and shared memory)
-// This should only be called once.
-// Check is_channel_created() to see if that's the case.
-inline void Messaging_Channel::create_channel(std::string id)
-{
-  this->mapping.get_name() = id + ".mapping";
-  this->sent.get_name() = id + ".event";
-  this->emptied.get_name() = id + ".emptied";
-
-  if (this->create_mapping() && this->create_event_objects())
-  {
-    this->channel_created = true;
-    this->id = id;
-  }
-}
-
-inline void Messaging_Channel::close()
-{
-  PVOID& mapping_address = this->mapping.get_address();
-  HANDLE& mapping_object = this->mapping.get_object();
-  HANDLE& sent_object = this->sent.get_object();
-  HANDLE& emptied_object = this->emptied.get_object();
-
-  // TODO: Some error checking?
-  // Release handles and unmap shared memory
-  UnmapViewOfFile(mapping_address);
-  CloseHandle(mapping_object);
-  CloseHandle(sent_object);
-  CloseHandle(emptied_object);
-
-  // Reset to NULL in case we want to reuse the object with another client channel
-  mapping_address = mapping_object = sent_object = emptied_object = NULL;
-
-  // Clear the names too. Maybe unnecessary?
-  this->mapping.get_name().clear();
-  this->sent.get_name().clear();
-  this->emptied.get_name().clear();
-}
-
-// Constructor. ID must be unique
-inline Messaging_Channel::Messaging_Channel(std::string id)
-{
-  this->create_channel(id);
-}
-
-// Getters
-inline Message_Event& Message_Receiver::get_sent_event()
-{
-  return this->sent;
-}
-
-inline Message_Event& Message_Receiver::get_emptied_event()
-{
-  return this->emptied;
-}
-
-inline Message_Mapping& Message_Receiver::get_mapping()
-{
-  return this->mapping;
-}
-
-inline void Message_Receiver::open(std::string id)
-{
-  this->create_channel(id);
-}
-
-// Constructor. ID must be unique
-inline Message_Receiver::Message_Receiver(std::string id)
-{
-  this->open(id);
-}
-
-// Move assignment operator
-inline Message_Info& Message_Info::operator=(Message_Info&& other) noexcept
-{
-  // Avoid self-assignment
-  if (this != &other)
-  {
-    receiver = std::move(other.receiver);
-    message = std::move(other.message);
-    send_attempts.store(other.send_attempts.load());
-
-    // Reset other to indicate moved-from state
-    other.send_attempts.store(0);
-  }
-
-  return *this;
-}
-
-// Copy assignment operator
-inline Message_Info& Message_Info::operator=(const Message_Info& other)
-{
-  // Avoid self-assignment
-  if (this != &other)
-  {
-    receiver = other.receiver;
-    message = other.message;
-    send_attempts.store(other.send_attempts.load()); // Copy the value of `send_attempts`
-  }
-
-  return *this;
-}
-
-// Move constructor
-inline Message_Info::Message_Info(Message_Info&& other) noexcept :
-  receiver(std::move(other.receiver)),
-  message(std::move(other.message))
-{
-  send_attempts.store(other.send_attempts.load());
-
-  // Reset other to indicate moved-from state
-  other.send_attempts.store(0);
-}
-
-// Copy constructor
-inline Message_Info::Message_Info(const Message_Info& other) :
-  receiver(other.receiver),
-  message(other.message),
-  send_attempts(other.send_attempts.load())
-{
-}
-
-inline Message_Info::Message_Info(Message_Receiver receiver, Message data) :
-  receiver(std::move(receiver)),
-  message(std::move(data))
-{
-}
-
-inline bool Message_Client::create_enqueue_signaling(std::string id)
-{
-  this->enqueued.get_name() = id + ".i_event"; // Internal event
-
-  if (!(this->enqueued.get_object() = CreateEventA(NULL, FALSE, FALSE, this->enqueued.get_name().data())))
-  {
-    return false; // Failed to create event object
-  }
-}
-
-inline bool Message_Client::send_enqueued_signal()
-{
-  return SetEvent(this->enqueued.get_object());
-}
-
-inline void Message_Client::wait_for_enqueued_signal()
-{
-  WaitForSingleObject(this->enqueued.get_object(), INFINITE);
-}
-
-// Pulls out data from the to-be-sent queue to finally send the message to the user-specified receiver.
-// This function runs on its own thread.
-inline void Message_Client::sender_loop()
-{
-  while (this->is_sender_thread_running)
-  {
-    auto result = this->send_queue.dequeue();
-
-    if (!result) // Queue is empty
+    for (int i = 0; i < capacity; ++i)
     {
-      // Wait until the queue contains an entry so we don't iterate unnecessarily
-      this->wait_for_enqueued_signal();
+      auto client_exists = safe_clients.at(i);
 
-      // enqueue() has been called and there should now be an entry in the queue.
-      // Skip to next iteration to process it
-      continue;
+      if (client_exists)
+      {
+        clients.push_back(client_exists->value);
+      }
     }
 
-    auto& queued = *result;
-    auto& receiver = queued.receiver;
+    return clients;
+  }
 
-    if (WaitForSingleObject(receiver.get_emptied_event().get_object(), NULL) == WAIT_TIMEOUT)
+  inline const message_handler_t& Server::get_handler()
+  {
+    return this->shared->get_handler();
+  }
+
+  inline bool Server::listen(message_handler_t message_handler, listening_interval_t interval)
+  {
+    return this->shared->listen(message_handler, interval);
+  }
+
+  inline std::future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
+  {
+    return this->shared->listen_async(message_handler, interval);
+  }
+
+  inline void Server::on_connection(connection_handler_t connection_handler)
+  {
+    this->shared->on_connection(connection_handler);
+  }
+
+  inline void Server::on_disconnection(disconnection_handler_t disconnection_handler)
+  {
+    this->shared->on_disconnection(disconnection_handler);
+  }
+
+  inline std::optional<Client> Server::connect(int target_id)
+  {
+    return this->shared->connect(target_id);
+  }
+
+  inline std::future<std::optional<Client>> Server::connect_async(int target_id)
+  {
+    return this->shared->connect_async(target_id);
+  }
+
+  inline void Server::close()
+  {
+    this->shared->close();
+  }
+
+  inline std::future<void> Server::close_async()
+  {
+    return this->shared->close_async();
+  }
+
+  inline bool Server::create(int id, message_handler_t message_handler)
+  {
+    return this->shared->create(id, message_handler);
+  }
+
+  inline Server::Server(int id, message_handler_t message_handler)
+  {
+    // TODO:
+    //  Maybe first check a global fixed sized shared memory block to see if client with specific ID already exists?
+
+    this->shared = std::make_shared<_detail::_Server>(id, message_handler);
+
+    if (!this->shared->open.load())
     {
-      // We are keeping track of send attempts so we can discard un-sendable messages
-      // after a user specified amount of tries.
-      // This necessary to avoid excessive busy waiting (waiting for the receiver to clear their message slot)
+      this->shared = nullptr;
+      return;
+    }
+  }
 
-      // If send max send attempts reached, don't queue message for a retry.
-      // This will cause the message to be forever lost
-      if (queued.send_attempts.load() >= this->max_send_attempts.load())
+  int Connection::get_id() const
+  {
+    return this->id;
+  }
+
+  inline std::optional<Client> Connection::accept()
+  {
+    auto client_exists = this->server->clients.find_if([id = this->id](const Client& client)
+    {
+      return client.get_id() == id;
+    });
+
+    if (client_exists)
+    {
+      return std::nullopt; // Client already exists, skip
+    }
+
+    // Save client to clients list.
+    auto& new_client = this->server->clients.insert(std::make_shared<_detail::_Client>(this->id, this->server))->value;
+
+    // Send success response to connecting client, and signal-it to wake up connecting client's thread
+    new_client.send<_detail::Message_Connection_Response>(true);
+
+    // Mark as handled so internal handler doesn't handle it for the second time
+    this->handled = true;
+
+    return new_client;
+  }
+
+  inline void Connection::reject()
+  {
+    if (!this->handled)
+    {
+      // Mark as handled so internal handler doesn't handle it for the second time
+      this->handled = true;
+    }
+
+    // Nothing else here for now
+  }
+
+  namespace _detail
+  {
+    inline bool _Client::open(int id)
+    {
+      if (this->create_channel(id))
       {
-        continue;
+        this->connected.store(true);
+        return true; // Success
       }
 
-      // Otherwise continue retrying until max attempts is reached
-      queued.send_attempts.fetch_add(1);
-      this->send_queue.enqueue(std::move(queued));
-      continue;
-
-      // Alternatives:
-      // Create a low priority thread with a queue of failed messages which attempts to send
-      // the failed messages over a larger delay (to avoid excessive CPU consumption on failed messages)
+      return false; // Error
     }
 
-    // No timeout: Message channel is clear and ready for new messages
-
-    // Fill shared memory with the next enqueued item
-    *reinterpret_cast<Message*>(receiver.get_mapping().get_address()) = queued.message;
-
-    // Signal the other process that data is ready
-    SetEvent(receiver.get_sent_event().get_object());
-  }
-}
-
-// Main message loop for this client.
-// This function waits for messages from other processes, dereferences them
-// and relays them to the user-specified message handler.
-inline void Message_Client::receiver_loop()
-{
-  while (this->is_receiver_thread_running)
-  {
-    if (this->handler)
+    inline bool _Client::is_connected() const
     {
-      // Wait for a message
-      WaitForSingleObject(this->sent.get_object(), INFINITE);
-
-      // Read shared memory into a message object
-      auto message = *reinterpret_cast<Message*>(this->mapping.get_address());
-
-      // Now pass the message object to our
-      // message handler (user-specified) for further processing
-      this->handler(message);
-
-      // Signal the other process that the message has been read.
-      SetEvent(this->emptied.get_object());
+      return this->connected.load();
     }
-  }
-}
 
-inline void Message_Client::start_sender_loop()
-{
-  // Only spawn a new thread if not already running
-  if (!this->is_sender_thread_running)
-  {
-    this->is_sender_thread_running = true;
-    this->sender_thread = std::thread(&Message_Client::sender_loop, this);
-  }
-}
+    inline int _Client::get_id() const
+    {
+      return this->id;
+    }
 
-inline void Message_Client::start_receiver_loop()
-{
-  // Only spawn a new thread if not already running
-  if (!this->is_receiver_thread_running)
-  {
-    this->is_receiver_thread_running = true;
-    this->receiver_thread = std::thread(&Message_Client::receiver_loop, this);
-  }
-}
+    inline void _Client::diconnect(int reason)
+    {
+      this->send<Message_Disconnection>(this->server->id, reason);
 
-// Use this in combination with is_channel_created() to (for example)
-// check if the current client object can be reassigned to a new channel
-inline bool Message_Client::is_thread_running()
-{
-  return (this->is_sender_thread_running && this->is_receiver_thread_running);
-}
+      auto client_exists = this->server->clients.find_if([this](const Client& client)
+      {
+        return client.get_id() == this->id;
+      });
 
-// This function adds data to our to-be-sent queue
-inline void Message_Client::send(Message_Receiver receiver, Message data)
-{
-  this->send_queue.enqueue(Message_Info{receiver, data});
-  this->send_enqueued_signal();
-}
+      if (client_exists)
+      {
+        this->server->clients.erase(client_exists->index);
+      }
+    }
 
-// Function for assigning a user-specified message handler.
-// Automatically starts the message thread if it doesn't exist already.
-inline void Message_Client::set_handler(std::function<void(Message)> handler)
-{
-  this->handler = handler;
-  this->start_receiver_loop();
-}
+    inline void _Client::send(Message* message)
+    {
+      if (!this->connected.load())
+      {
+        return;
+      }
 
-inline void Message_Client::create(std::string id, std::function<void(Message)> handler)
-{
-  this->create_enqueue_signaling(id);
-  this->create_channel(id);
-  this->start_sender_loop();
+      // Enqueue message in shared memory queue
+      // TODO: Handle messages marked as important
 
-  if (handler != nullptr)
-  {
-    this->set_handler(handler);
-  }
-}
+      Message_Packet data;
+      data.sender_id = this->server->id;
+      data.message = *message;
 
-// Close channel (for example) before reassigning to a new channel
-inline void Message_Client::close()
-{
-  // Wait until all messages in the message queue are sent
-  while (this->send_queue.size() != 0)
-  {
-    Sleep(10);
-  }
+      this->message_queue.enqueue(data);
 
-  // Unmap file memory and close all handles
-  Messaging_Channel::close();
+      // Signal to connected client that they have received a message
+      this->received_signal.increment();
+    }
 
-  // Signal to message threads to terminate
-  this->is_sender_thread_running = false;
-  this->is_receiver_thread_running = false;
+    template <typename T, typename... Args>
+    inline void _Client::send(Args... args)
+    {
+      // Construct custom message
+      T custom_message(std::forward<Args>(args)...);
 
-  // Join threads with main thread
-  this->sender_thread.join();
-  this->receiver_thread.join();
-}
+      // NOTE:
+      //  If _smm_id is protected, end-user must declare
+      //  message struct as friend class of smm::Message
+      int id = custom_message._smm_id;
+      Message message(id, custom_message);
 
-// Move assignment operator
-inline Message_Client& Message_Client::operator=(Message_Client&& other) noexcept
-{
-  // Avoid self-assignment
-  if (this != &other)
-  {
-    Messaging_Channel::operator=(std::move(other));
-    sender_thread = std::move(other.sender_thread);
-    receiver_thread = std::move(other.receiver_thread);
-    enqueued = std::move(other.enqueued);
-    send_queue = std::move(other.send_queue);
-    handler = std::move(other.handler);
+      this->send(&message);
+    }
 
-    is_sender_thread_running.store(other.is_sender_thread_running.load());
-    is_receiver_thread_running.store(other.is_receiver_thread_running.load());
-    max_send_attempts.store(other.max_send_attempts.load());
+    // Constructor. ID must be unique
+    inline _Client::_Client(int id, _Server* server) :
+      server(server)
+    {
+      this->open(id);
+    }
 
-    // Reset other to indicate moved-from state
-    other.is_sender_thread_running.store(false);
-    other.is_receiver_thread_running.store(false);
-    other.max_send_attempts.store(0);
-  }
+    inline void _Server::_message_handler(int sender_id, Message& message)
+    {
+      Client sender;
 
-  return *this;
-}
+      auto client_exists = this->clients.find_if([sender_id](const Client& client)
+      {
+        return client.get_id() == sender_id;
+      });
 
-// Move constructor
-inline Message_Client::Message_Client(Message_Client&& other) noexcept :
-  Messaging_Channel(std::move(other)),
-  sender_thread(std::move(other.sender_thread)),
-  receiver_thread(std::move(other.receiver_thread)),
-  enqueued(std::move(other.enqueued)),
-  send_queue(std::move(other.send_queue)),
-  handler(std::move(other.handler))
-{
-  is_sender_thread_running.store(other.is_sender_thread_running.load());
-  is_receiver_thread_running.store(other.is_receiver_thread_running.load());
-  max_send_attempts.store(other.max_send_attempts.load());
+      if (client_exists)
+      {
+        sender = client_exists->value;
+      }
 
-  // Reset other to indicate moved-from state
-  other.is_sender_thread_running.store(false);
-  other.is_receiver_thread_running.store(false);
-  other.max_send_attempts.store(0);
-}
+      switch (message.get_id())
+      {
+        case SMM_MESSAGE_ID_CONNECTION:
+        {
+          if (client_exists)
+          {
+            // Connection message from a client that already exists in our list?
+            // Makes no sense, skip
+            break;
+          }
 
-// Constructor. ID must be unique
-inline Message_Client::Message_Client(std::string id, std::function<void(Message)> handler)
-{
-  this->create(id, handler);
-}
+          Connection connection_attempt(sender_id, this);
 
-inline Message_Client::~Message_Client()
-{
-  this->close();
-}
+          if (this->connection_handler)
+          {
+            this->connection_handler(connection_attempt);
+
+            //if (connection_attempt.handled)
+            //{
+            //  break; // User has already handled the connection
+            //}
+
+            // User hasn't handled the connection, so accept it here by default?
+            //connection_attempt.accept();
+          }
+          else
+          {
+            // No user-specified handler provided, accept connection by default
+            connection_attempt.accept();
+          }
+
+          break;
+        }
+
+        case SMM_MESSAGE_ID_DISCONNECTION:
+        {
+          if (!client_exists)
+          {
+            // Disconnection message from a client that doesn't exist in our list?
+            // Makes no sense, skip
+            break;
+          }
+
+          if (this->disconnection_handler)
+          {
+            this->disconnection_handler(sender);
+          }
+
+          // Finally remove from our list
+          sender.shared->connected.store(false);
+          this->clients.erase(client_exists->index);
+          break;
+        }
+
+        // Not an internal message, redirect to user-specified message handler
+        default:
+        {
+          if (!client_exists)
+          {
+            break;
+          }
+
+          if (this->message_handler)
+          {
+            this->message_handler(sender, message);
+          }
+
+          break;
+        }
+      }
+    }
+
+    // Main message loop for this client.
+    // This function waits for messages from other processes, deqeueues them from shared-memory
+    // and relays them to the user-specified message handler.
+    inline void _Server::listening_loop(listening_interval_t interval)
+    {
+      High_Precision_Timer timer;
+
+      while (this->listening_loop_running.load())
+      {
+        // Wait for a message
+        timer.sleep(interval);
+        this->received_signal.wait(INFINITE);
+
+        //Message message;
+        bool important = false;
+        Message_Packet data;
+
+        // Even though we have received a signal about a received message,
+        // due to the concurrent nature of this program, we check if the buffer is empty anyway...
+        if (!this->message_queue.dequeue(&data, &important))
+        {
+          continue; // Skip if buffer empty
+        }
+
+        this->_message_handler(data.sender_id, data.message);
+      }
+    }
+
+    // Use this in combination with is_channel_created() to (for example)
+    // check if the current client object can be reassigned to a new channel
+    inline bool _Server::is_thread_running()
+    {
+      return this->listening_loop_running.load();
+    }
+
+    inline bool _Server::is_open()
+    {
+      return this->open.load();
+    }
+
+    // This can be used to check if a handler is already set
+    inline const message_handler_t& _Server::get_handler()
+    {
+      return this->message_handler;
+    }
+
+    // This function or it's async variant must be called before connecting or sending messages
+    inline bool _Server::listen(message_handler_t message_handler, listening_interval_t interval)
+    {
+      if (!this->open.load())
+      {
+        return false;
+      }
+
+      this->listening_loop_running.store(true);
+      this->message_handler = message_handler;
+      this->listening_loop(interval);
+
+      return true;
+    }
+
+    inline std::future<bool>& _Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
+    {
+      // Promisify return value
+      std::promise<bool> promise;
+      this->listening_thread = promise.get_future();
+
+      // Only spawn a new thread if not already running
+      if (this->listening_loop_running.load())
+      {
+        promise.set_value(false);
+        return this->listening_thread;
+      }
+
+      //this->listening_thread = std::thread(&_Server::listen, this, message_handler, interval);
+      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, message_handler, interval);
+      this->listening_async.store(true);
+      return this->listening_thread;
+    }
+
+    inline void _Server::on_connection(connection_handler_t& connection_handler)
+    {
+      this->connection_handler = connection_handler;
+    }
+
+    inline void _Server::on_disconnection(disconnection_handler_t& disconnection_handler)
+    {
+      this->disconnection_handler = disconnection_handler;
+    }
+
+    inline std::optional<Client> _Server::connect(int target_id)
+    {
+      std::optional<Client> result;
+
+      auto client_exists = this->clients.find_if([target_id](const Client& client)
+      {
+        return client.get_id() == target_id;
+      });
+
+      if (client_exists)
+      {
+        // Return client with given id if it's already connected to us
+        return client_exists->value;
+      }
+
+      // We aren't connected to the client and the server isn't connected to us,
+      // so establish the connection
+      Client new_client(std::make_shared<_Client>(target_id, this));
+
+      // Send our id to new_client in connection message
+      new_client.send<Message_Connection>(this->id);
+
+      // Temporary wrapper
+      struct Hostage
+      {
+        Message_Packet data;
+        bool important = false;
+      };
+
+      std::vector<Hostage> hostages;
+
+      while (true)
+      {
+        this->received_signal.wait(INFINITE); // Wait for message signal to avoid busy waiting
+        Hostage hostage;
+
+        if (!this->message_queue.dequeue(&hostage.data, &hostage.important))
+        {
+          break; // Queue is empty, skip
+        }
+
+        if (hostage.data.message.id != SMM_MESSAGE_ID_CONNECTION_RESPONSE)
+        {
+          // Not our message, keep as hostage to enqueue back later
+          hostages.push_back(hostage);
+          continue;
+        }
+
+        auto response = hostage.data.message.get_content_as<Message_Connection_Response>();
+
+        if (response.success)
+        {
+          this->clients.insert(new_client);
+          result = new_client;
+        }
+        else
+        {
+          result = std::nullopt;
+        }
+
+        break;
+      }
+
+      // Re-enqueue dequeued messages back into regular processing
+      for (auto& hostage : hostages)
+      {
+        this->message_queue.enqueue(hostage.data, hostage.important);
+      }
+
+      // Finally return the connected-to client in order to send messages idiomatically
+      return result;
+    }
+
+    inline std::future<std::optional<Client>> _Server::connect_async(int target_id)
+    {
+      return std::async(std::launch::async, &_Server::connect, this, target_id);
+    }
+
+    // Close channel (for example) before reassigning to a new channel
+    inline void _Server::close()
+    {
+      // Mark as closed, to disallow more sends
+      this->open.store(false);
+
+      // Wait until all remaining messages in message_queue are processed
+      // TODO: Timeout?
+      while (!this->message_queue.is_empty())
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep to avoid busy waiting
+      }
+
+      // Signal to message threads to terminate
+      this->listening_loop_running.store(false);
+
+      // Join threads with main thread
+      if (this->listening_async.load())
+      {
+        this->listening_thread.get();
+      }
+
+      // Disconnect all clients in clients
+      // When thats done, there will no longer be open handles to the shared memory, and thus the OS will free it
+      for (std::size_t i = 0; i < this->clients.size(); ++i)
+      {
+        auto client_exists = this->clients.at(i);
+
+        if (!client_exists)
+        {
+          continue;
+        }
+
+        client_exists->value.diconnect(SMM_DISCONNECTION_CLOSING);
+      }
+
+      // Unmap file memory and close all handles
+      _Channel::close();
+    }
+
+    inline std::future<void> _Server::close_async()
+    {
+      return std::async(std::launch::async, &_Server::close, this);
+    }
+
+    inline bool _Server::create(int id, message_handler_t message_handler)
+    {
+      // Only closed client instances can create a channel.
+      if (this->open.load())
+      {
+        return false;
+      }
+
+      if (!this->create_channel(id))
+      {
+        return false;
+      }
+
+      if (message_handler != nullptr)
+      {
+        // TODO: Error checking
+        this->listen_async(message_handler);
+      }
+
+      this->open.store(true);
+      return true; // Success!
+    }
+
+    // Move assignment operator
+    inline _Server& _Server::operator=(_Server&& other) noexcept
+    {
+      // Avoid self-assignment
+      if (this != &other)
+      {
+        _Channel::operator=(std::move(other));
+        this->listening_thread = std::move(other.listening_thread);
+        this->message_handler = std::move(other.message_handler);
+
+        this->listening_async.store(other.listening_async.load());
+        this->listening_loop_running.store(other.listening_loop_running.load());
+
+        // Reset other to indicate moved-from state
+        other.listening_async.store(false);
+        other.listening_loop_running.store(false);
+      }
+
+      return *this;
+    }
+
+    // Move constructor
+    inline _Server::_Server(_Server&& other) noexcept :
+      _Channel(std::move(other)),
+      listening_thread(std::move(other.listening_thread)),
+      message_handler(std::move(other.message_handler))
+    {
+      this->listening_async.store(other.listening_async.load());
+      this->listening_loop_running.store(other.listening_loop_running.load());
+
+      // Reset other to indicate moved-from state
+      other.listening_async.store(false);
+      other.listening_loop_running.store(false);
+    }
+
+    // Constructor. ID must be unique
+    inline _Server::_Server(int id, message_handler_t message_handler)
+    {
+      this->create(id, message_handler);
+    }
+
+    inline _Server::~_Server()
+    {
+      this->close();
+    }
+  } // namespace _detail
 
 } // namespace smm
+
+#endif // SMM_SHARED_MEMORY_MESSAGER_H
