@@ -922,7 +922,7 @@ namespace smm
   namespace _detail
   {
 #ifdef _WIN32
-    void CALLBACK High_Precision_Timer::timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2)
+    inline void CALLBACK High_Precision_Timer::timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2)
     {
       // Access the event handle through the instance pointer
       High_Precision_Timer* instance = reinterpret_cast<High_Precision_Timer*>(dw_user);
@@ -1001,9 +1001,9 @@ namespace smm
     }
 
 #ifdef _WIN32
-    HANDLE Semaphore::get_object() const
+    inline HANDLE Semaphore::get_object() const
 #else
-    sem_t* Semaphore::get_object() const
+    inline sem_t* Semaphore::get_object() const
 #endif
     {
       return this->object;
@@ -1510,7 +1510,7 @@ namespace smm
     }
   }
 
-  int Connection::get_id() const
+  inline int Connection::get_id() const
   {
     return this->id;
   }
