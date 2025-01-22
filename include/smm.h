@@ -47,8 +47,9 @@
 // - To use this in a UWP app, define SMM_WIN_UWP
 
 // TODO:
-// - Keep alive mechanism to remove abruptly disconnected clients
-// - Increase timer delay precision and add an interval parameter to client::send
+// - (Important)  Keep alive mechanism to remove abruptly disconnected clients
+// - (Desried)    Increase timer delay precision and add an interval parameter to client::send
+// - (Important?) Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
 
 // DEV NOTES FOR FUTURE MAINTENANCE:
 // - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
@@ -73,12 +74,6 @@
 // Disconnection reason codes
 #define SMM_DISCONNECTION_NORMAL -1
 #define SMM_DISCONNECTION_CLOSING -2
-
-// Sandbox path attached as a prefix to mapping and semaphore string identifiers.
-// For a custom path, define this before including smm.h
-#ifndef SMM_SANDBOX_PATH
-#define SMM_SANDBOX_PATH "SMM/SANDBOX/"
-#endif
 
 namespace smm
 {
@@ -720,6 +715,8 @@ namespace smm
     Client(const std::shared_ptr<_detail::_Client>& shared);
     Client& operator=(const Client& other);
     Client(const Client& other);
+
+    // Maybe make _Client shared for Client too? Not really necessary for current utility though
     Client() {}
 
     //friend class Safe_Array;
@@ -752,10 +749,12 @@ namespace smm
     void close();
     std::future<void> close_async();
 
+    bool create(int id, std::string name_space, message_handler_t message_handler = nullptr);
     bool create(int id, message_handler_t message_handler = nullptr);
 
+    Server(int id, std::string name_space, message_handler_t message_handler = nullptr);
     Server(int id, message_handler_t message_handler = nullptr);
-    Server() {}
+    Server();
 
     friend class Client;
     friend class _detail::_Channel;
@@ -801,7 +800,7 @@ namespace smm
       bool channel_created{ false };
       int id{ -1 };
 
-      bool create_channel(int id);
+      bool create_channel(int id, std::string name_space);
 
     public:
       bool is_channel_created() const;
@@ -809,7 +808,7 @@ namespace smm
       void close();
 
       _Channel() {}
-      _Channel(int id);
+      _Channel(int id, std::string name_space);
 
       friend class Client;
       friend class Server;
@@ -823,7 +822,7 @@ namespace smm
       std::atomic<bool> connected{ false };
       _Server* server = { nullptr };
 
-      bool open(int id);
+      bool open(int id, std::string name_space = "");
       void close();
 
     public:
@@ -849,6 +848,7 @@ namespace smm
     class _Server : public _Channel
     {
     protected:
+      High_Precision_Timer timer;
       std::future<bool> listening_thread;
 
       std::atomic<bool> listening_async{ false };
@@ -881,6 +881,7 @@ namespace smm
       void close();
       std::future<void> close_async();
 
+      bool create(int id, std::string name_space, message_handler_t message_handler = nullptr);
       bool create(int id, message_handler_t message_handler = nullptr);
 
       _Server& operator=(const _Server&) = delete;
@@ -890,6 +891,7 @@ namespace smm
       _Server() {};
       ~_Server();
 
+      _Server(int id, std::string name_space, message_handler_t message_handler = nullptr);
       _Server(int id, message_handler_t message_handler = nullptr);
 
       friend class Client;
@@ -1278,14 +1280,15 @@ namespace smm
     // Create communication channel (event object and shared memory)
     // This should only be called once.
     // Check is_channel_created() to see if that's the case.
-    inline bool _Channel::create_channel(int id)
+    inline bool _Channel::create_channel(int id, std::string name_space)
     {
       std::string id_string = std::to_string(id);
 
       // Construct mapping and semaphore id strings.
-      // Isolates from global namespace to sandbox.
-      std::string file_mapping_name = SMM_SANDBOX_PATH + id_string + ".mapping";
-      std::string semaphore_name = SMM_SANDBOX_PATH + id_string + ".signal";
+      // Isolates from global namespace to user specified namespace.
+      // By allowing a custom namespace we can connect to a UWP sandbox.
+      std::string file_mapping_name = name_space + "/" + id_string + ".mapping";
+      std::string semaphore_name = name_space + "/" + id_string + ".signal";
 
       constexpr std::size_t shared_memory_size =
         Shared_Queue<Message_Packet>::get_control_block_size()
@@ -1328,9 +1331,9 @@ namespace smm
     }
 
     // Constructor. ID must be unique
-    inline _Channel::_Channel(int id)
+    inline _Channel::_Channel(int id, std::string name_space)
     {
-      this->create_channel(id);
+      this->create_channel(id, name_space);
     }
   } // namespace _detail
 
@@ -1491,23 +1494,44 @@ namespace smm
     return this->shared->close_async();
   }
 
+  inline bool Server::create(int id, std::string name_space, message_handler_t message_handler)
+  {
+    return this->shared->create(id, name_space, message_handler);
+  }
+
   inline bool Server::create(int id, message_handler_t message_handler)
   {
     return this->shared->create(id, message_handler);
   }
 
-  inline Server::Server(int id, message_handler_t message_handler)
+  inline Server::Server(int id, std::string name_space, message_handler_t message_handler)
   {
     // TODO:
     //  Maybe first check a global fixed sized shared memory block to see if client with specific ID already exists?
+    //  ^ Would this even work with UWP?
 
+    this->shared = std::make_shared<_detail::_Server>(id, name_space, message_handler);
+
+    if (!this->shared->open.load())
+    {
+      this->shared = nullptr;
+    }
+  }
+
+  inline Server::Server(int id, message_handler_t message_handler)
+  {
     this->shared = std::make_shared<_detail::_Server>(id, message_handler);
 
     if (!this->shared->open.load())
     {
       this->shared = nullptr;
-      return;
     }
+  }
+
+  inline Server::Server()
+  {
+    // Must create shared even for a default initialization
+    this->shared = std::make_shared<_detail::_Server>();
   }
 
   inline int Connection::get_id() const
@@ -1552,9 +1576,9 @@ namespace smm
 
   namespace _detail
   {
-    inline bool _Client::open(int id)
+    inline bool _Client::open(int id, std::string name_space)
     {
-      if (this->create_channel(id))
+      if (this->create_channel(id, name_space))
       {
         this->connected.store(true);
         return true; // Success
@@ -1737,13 +1761,10 @@ namespace smm
     // and relays them to the user-specified message handler.
     inline void _Server::listening_loop(listening_interval_t interval)
     {
-      // TODO: Integrate timer into _Server as a member instead
-      High_Precision_Timer timer;
-
       while (this->listening_loop_running.load())
       {
         // Wait for a message
-        timer.sleep(interval);
+        this->timer.sleep(interval);
         this->received_signal.wait(INFINITE);
 
         //Message message;
@@ -1911,8 +1932,8 @@ namespace smm
       // TODO: Timeout?
       while (!this->message_queue.is_empty())
       {
-        // TODO: Use High_Precision_Timer instead
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep to avoid busy waiting
+        // TODO?: Change sleep to 1ms instead for consistency?
+        this->timer.sleep(10); // Sleep to avoid busy waiting
       }
 
       // Signal to message threads to terminate
@@ -1947,7 +1968,7 @@ namespace smm
       return std::async(std::launch::async, &_Server::close, this);
     }
 
-    inline bool _Server::create(int id, message_handler_t message_handler)
+    inline bool _Server::create(int id, std::string name_space, message_handler_t message_handler)
     {
       // Only closed client instances can create a channel.
       if (this->open.load())
@@ -1955,7 +1976,7 @@ namespace smm
         return false;
       }
 
-      if (!this->create_channel(id))
+      if (!this->create_channel(id, name_space))
       {
         return false;
       }
@@ -1968,6 +1989,11 @@ namespace smm
 
       this->open.store(true);
       return true; // Success!
+    }
+
+    inline bool _Server::create(int id, message_handler_t message_handler)
+    {
+      return this->create(id, "", message_handler);
     }
 
     // Move assignment operator
@@ -2003,6 +2029,12 @@ namespace smm
       // Reset other to indicate moved-from state
       other.listening_async.store(false);
       other.listening_loop_running.store(false);
+    }
+
+    // Constructor. ID must be unique
+    inline _Server::_Server(int id, std::string name_space, message_handler_t message_handler)
+    {
+      this->create(id, name_space, message_handler);
     }
 
     // Constructor. ID must be unique
