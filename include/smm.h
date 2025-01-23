@@ -613,7 +613,7 @@ namespace smm
     int get_id() const;
 
     template <typename T>
-    T get_content_as();
+    T get_content_as() const;
 
     template <typename T>
     void set_content_as(int id, T content);
@@ -689,9 +689,9 @@ namespace smm
   using listening_interval_t = long;
 #endif
 
-  using connection_handler_t = std::function<void(Connection&)>;
-  using disconnection_handler_t = std::function<void(Client&, int)>;
-  using message_handler_t = std::function<void(Client&, Message&)>;
+  using connection_handler_t = std::function<void(const Connection&)>;
+  using disconnection_handler_t = std::function<void(const Client&, int)>;
+  using message_handler_t = std::function<void(const Client&, const Message&)>;
 
   class Client
   {
@@ -701,13 +701,13 @@ namespace smm
   public:
     int get_id() const;
     bool is_connected() const;
-    void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
+    void disconnect(int reason = SMM_DISCONNECTION_NORMAL) const;
 
-    void send(Message* message);
-    void send(Message message);
+    void send(Message* message) const;
+    void send(Message message) const;
 
     template <typename T, typename... Args>
-    void send(Args... args);
+    void send(Args... args) const;
 
     // TODO: Move assignment operator
     // TODO: Move constructor
@@ -749,10 +749,10 @@ namespace smm
     void close();
     std::future<void> close_async();
 
-    bool create(int id, std::string name_space, message_handler_t message_handler = nullptr);
+    bool create(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
     bool create(int id, message_handler_t message_handler = nullptr);
 
-    Server(int id, std::string name_space, message_handler_t message_handler = nullptr);
+    Server(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
     Server(int id, message_handler_t message_handler = nullptr);
     Server();
 
@@ -766,18 +766,21 @@ namespace smm
   class Connection
   {
   protected:
-    bool handled{ false };
     int id{ 0 };
+    std::string name_space;
     _detail::_Server* server{ nullptr };
 
   public:
     int get_id() const;
+    const std::string& get_name_space() const;
 
-    std::optional<Client> accept();
-    void reject();
+    // Logical-constness out the window for consistency
+    std::optional<Client> accept() const;
+    void reject() const;
 
-    Connection(int id, _detail::_Server* server) :
+    Connection(int id, const std::string& name_space, _detail::_Server* server) :
       id(id),
+      name_space(name_space),
       server(server)
     {
     }
@@ -799,16 +802,18 @@ namespace smm
       // True if CreateEventObject() and CreateMapping() both succeed, false otherwise
       bool channel_created{ false };
       int id{ -1 };
+      std::string name_space;
 
-      bool create_channel(int id, std::string name_space);
+      bool create_channel(int id, const std::string& name_space);
 
     public:
       bool is_channel_created() const;
       int get_id() const;
+      const std::string& get_name_space() const;
       void close();
 
       _Channel() {}
-      _Channel(int id, std::string name_space);
+      _Channel(int id, const std::string& name_space);
 
       friend class Client;
       friend class Server;
@@ -822,7 +827,7 @@ namespace smm
       std::atomic<bool> connected{ false };
       _Server* server = { nullptr };
 
-      bool open(int id, std::string name_space = "");
+      bool open(int id, const std::string& name_space);
       void close();
 
     public:
@@ -835,7 +840,7 @@ namespace smm
       template <typename T, typename... Args>
       void send(Args&&... args);
 
-      _Client(int id, _Server* server);
+      _Client(int id, const std::string& name_space, _Server* server);
       _Client() {}
       ~_Client();
 
@@ -861,7 +866,7 @@ namespace smm
       disconnection_handler_t disconnection_handler;
       message_handler_t message_handler;
 
-      void _message_handler(int sender_id, Message& message);
+      void _message_handler(int sender_id, const Message& message);
       void listening_loop(listening_interval_t interval);
 
     public:
@@ -881,7 +886,7 @@ namespace smm
       void close();
       std::future<void> close_async();
 
-      bool create(int id, std::string name_space, message_handler_t message_handler = nullptr);
+      bool create(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
       bool create(int id, message_handler_t message_handler = nullptr);
 
       _Server& operator=(const _Server&) = delete;
@@ -891,7 +896,7 @@ namespace smm
       _Server() {};
       ~_Server();
 
-      _Server(int id, std::string name_space, message_handler_t message_handler = nullptr);
+      _Server(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
       _Server(int id, message_handler_t message_handler = nullptr);
 
       friend class Client;
@@ -1280,7 +1285,7 @@ namespace smm
     // Create communication channel (event object and shared memory)
     // This should only be called once.
     // Check is_channel_created() to see if that's the case.
-    inline bool _Channel::create_channel(int id, std::string name_space)
+    inline bool _Channel::create_channel(int id, const std::string& name_space)
     {
       std::string id_string = std::to_string(id);
 
@@ -1310,6 +1315,7 @@ namespace smm
 
       // Success! We should now have 'shared memory' communication ready to go.
       this->id = id;
+      this->name_space = name_space;
       return (this->channel_created = true);
     }
 
@@ -1324,6 +1330,11 @@ namespace smm
       return this->id;
     }
 
+    inline const std::string& _Channel::get_name_space() const
+    {
+      return this->name_space;
+    }
+
     inline void _Channel::close()
     {
       this->shared_memory.close();
@@ -1331,7 +1342,7 @@ namespace smm
     }
 
     // Constructor. ID must be unique
-    inline _Channel::_Channel(int id, std::string name_space)
+    inline _Channel::_Channel(int id, const std::string& name_space)
     {
       this->create_channel(id, name_space);
     }
@@ -1343,9 +1354,11 @@ namespace smm
   }
 
   template <typename T>
-  inline T Message::get_content_as()
+  inline T Message::get_content_as() const
   {
-    return *reinterpret_cast<T*>(this->content);
+    // Reinterpret to const to respect const nature of this function,
+    // and to allow this to work in functions that accept "const Message&"
+    return *reinterpret_cast<const T*>(this->content);
   }
 
   template <typename T>
@@ -1371,23 +1384,23 @@ namespace smm
     return this->shared->get_id();
   }
 
-  inline void Client::disconnect(int reason)
+  inline void Client::disconnect(int reason) const
   {
     this->shared->disconnect(reason);
   }
 
-  inline void Client::send(Message* message)
+  inline void Client::send(Message* message) const
   {
     this->shared->send(message);
   }
 
-  inline void Client::send(Message message)
+  inline void Client::send(Message message) const
   {
     this->shared->send(&message);
   }
 
   template <typename T, typename... Args>
-  inline void Client::send(Args... args)
+  inline void Client::send(Args... args) const
   {
     this->shared->send<T>(std::forward<Args>(args)...);
   }
@@ -1494,7 +1507,7 @@ namespace smm
     return this->shared->close_async();
   }
 
-  inline bool Server::create(int id, std::string name_space, message_handler_t message_handler)
+  inline bool Server::create(int id, const std::string& name_space, message_handler_t message_handler)
   {
     return this->shared->create(id, name_space, message_handler);
   }
@@ -1504,7 +1517,7 @@ namespace smm
     return this->shared->create(id, message_handler);
   }
 
-  inline Server::Server(int id, std::string name_space, message_handler_t message_handler)
+  inline Server::Server(int id, const std::string& name_space, message_handler_t message_handler)
   {
     // TODO:
     //  Maybe first check a global fixed sized shared memory block to see if client with specific ID already exists?
@@ -1539,7 +1552,7 @@ namespace smm
     return this->id;
   }
 
-  inline std::optional<Client> Connection::accept()
+  inline std::optional<Client> Connection::accept() const
   {
     auto client_exists = this->server->clients.find_if([id = this->id](const Client& client)
     {
@@ -1552,31 +1565,23 @@ namespace smm
     }
 
     // Save client to clients list.
-    auto& new_client = this->server->clients.insert(std::make_shared<_detail::_Client>(this->id, this->server))->value;
+    auto& new_client = this->server->clients.insert(std::make_shared<_detail::_Client>(this->id, this->name_space, this->server))->value;
 
     // Send success response to connecting client, and signal-it to wake up connecting client's thread
     new_client.send<_detail::Message_Connection_Response>(true);
 
-    // Mark as handled so internal handler doesn't handle it for the second time
-    this->handled = true;
-
     return new_client;
   }
 
-  inline void Connection::reject()
+  inline void Connection::reject() const
   {
-    if (!this->handled)
-    {
-      // Mark as handled so internal handler doesn't handle it for the second time
-      this->handled = true;
-    }
-
-    // Nothing else here for now
+    // Nothing here for now. This used to update the handled state
+    // but the current implementation doesn't need it anymore.
   }
 
   namespace _detail
   {
-    inline bool _Client::open(int id, std::string name_space)
+    inline bool _Client::open(int id, const std::string& name_space)
     {
       if (this->create_channel(id, name_space))
       {
@@ -1658,10 +1663,11 @@ namespace smm
     }
 
     // Constructor. ID must be unique
-    inline _Client::_Client(int id, _Server* server) :
+    // This is not meant to be called by end-users.
+    inline _Client::_Client(int id, const std::string& name_space, _Server* server) :
       server(server)
     {
-      this->open(id);
+      this->open(id, name_space);
     }
 
     inline _Client::~_Client()
@@ -1669,7 +1675,7 @@ namespace smm
       this->close();
     }
 
-    inline void _Server::_message_handler(int sender_id, Message& message)
+    inline void _Server::_message_handler(int sender_id, const Message& message)
     {
       Client sender;
 
@@ -1694,19 +1700,11 @@ namespace smm
             break;
           }
 
-          Connection connection_attempt(sender_id, this);
+          Connection connection_attempt(sender_id, this->name_space, this);
 
           if (this->connection_handler)
           {
             this->connection_handler(connection_attempt);
-
-            //if (connection_attempt.handled)
-            //{
-            //  break; // User has already handled the connection
-            //}
-
-            // User hasn't handled the connection, so accept it here by default?
-            //connection_attempt.accept();
           }
           else
           {
@@ -1844,6 +1842,7 @@ namespace smm
       this->disconnection_handler = disconnection_handler;
     }
 
+    // Connects to a given server. Only connects to servers in the same namespace.
     inline std::optional<Client> _Server::connect(int target_id)
     {
       std::optional<Client> result;
@@ -1861,7 +1860,7 @@ namespace smm
 
       // We aren't connected to the client and the server isn't connected to us,
       // so establish the connection
-      Client new_client(std::make_shared<_Client>(target_id, this));
+      Client new_client(std::make_shared<_Client>(target_id, this->name_space, this));
 
       // Send our id to new_client in connection message
       new_client.send<Message_Connection>(this->id);
@@ -1968,7 +1967,7 @@ namespace smm
       return std::async(std::launch::async, &_Server::close, this);
     }
 
-    inline bool _Server::create(int id, std::string name_space, message_handler_t message_handler)
+    inline bool _Server::create(int id, const std::string& name_space, message_handler_t message_handler)
     {
       // Only closed client instances can create a channel.
       if (this->open.load())
@@ -2032,7 +2031,7 @@ namespace smm
     }
 
     // Constructor. ID must be unique
-    inline _Server::_Server(int id, std::string name_space, message_handler_t message_handler)
+    inline _Server::_Server(int id, const std::string& name_space, message_handler_t message_handler)
     {
       this->create(id, name_space, message_handler);
     }
