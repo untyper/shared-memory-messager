@@ -17,7 +17,8 @@
 #include <array>
 #include <utility>
 #include <cstddef>
-//#include <iostream>
+#include <type_traits>
+//#include <iostream> // Debugging
 
 #ifdef _WIN32
 // Windows includes
@@ -44,22 +45,48 @@
 #endif
 
 // NOTES:
-// - To use this in a UWP app, define SMM_WIN_UWP
+// - To use this in a UWP app:
+//   1. Define SMM_WIN_UWP before including this file
+//   2. To interact with the UWP app, an external client must
+//      connect through the UWP app's namespace. Retrieve it with GetAppContainerNamedObjectPath()
+//      in the UWP app and pass it to the client through a fullTrustProcess (for example).
 
 // TODO:
 // - (Important)  Keep alive mechanism to remove abruptly disconnected clients
-// - (Desried)    Increase timer delay precision and add an interval parameter to client::send
 // - (Important?) Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
+// - (Important?) Proper error handling to handle initialization failures.
+// - (Important?) Test on Unix. No tests have been conducted on Unix yet.
+// - (Desried)    Increase timer delay precision and add an interval parameter to client::send
+// - (Desired)    Better comments.
 
 // DEV NOTES FOR FUTURE MAINTENANCE:
 // - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
 // - Use SMM_UNIX_<NNN> format for Unix specific macro definitions.
 // - Inline member fields in a class/struct should use uniform initialization.
+// - All non-empty string literals must be encrypted with string::encrypt().
+//   Dev is free to modify SMM_STRING_SHIFT_AMOUNT for custom encryption outcomes.
 
+// End-user customizeable macro definitions
+#ifndef SMM_MESSAGE_SIZE
 #define SMM_MESSAGE_SIZE 4096
-#define SMM_MAX_QUEUE_CAPACITY 128
-#define SMM_MAX_CLIENTS_PER_SERVER 64
+#endif
 
+#ifndef SMM_MAX_QUEUE_CAPACITY
+#define SMM_MAX_QUEUE_CAPACITY 128
+#endif
+
+#ifndef SMM_MAX_CLIENTS_PER_SERVER
+#define SMM_MAX_CLIENTS_PER_SERVER 64
+#endif
+
+// String shift-encryption:
+// - 0  = No enctryption
+// - 1+ = Encryption
+#ifndef SMM_STRING_SHIFT_AMOUNT
+#define SMM_STRING_SHIFT_AMOUNT 2
+#endif
+
+// Non-customizeable macro definitions
 #define SMM_MESSAGE_ID static constexpr int _smm_id
 
 // Negative message ID's are reserved for internal messages.
@@ -593,12 +620,105 @@ namespace smm
       // Default constructor
       Shared_Queue() {}
     };
-  } // namespace _detail
+
+    // Basic string encryption logic
+    namespace string
+    {
+      // Compile-time shift-based encryption structure
+      template <size_t N>
+      struct Encrypted_String {
+        char data[N];
+
+        constexpr const char* get() const {
+          return data; // Return encrypted data
+        }
+      };
+
+      // Function to shift a character forward within alphanumeric ranges
+      constexpr char shift_char_forward(char c, int shift_amount)
+      {
+        if (c >= 'A' && c <= 'Z')
+        {
+          // Shift within uppercase letters
+          return static_cast<char>(((c - 'A' + shift_amount) % 26) + 'A');
+        }
+        else if (c >= 'a' && c <= 'z')
+        {
+          // Shift within lowercase letters
+          return static_cast<char>(((c - 'a' + shift_amount) % 26) + 'a');
+        }
+        else if (c >= '0' && c <= '9')
+        {
+          // Shift within digits
+          return static_cast<char>(((c - '0' + shift_amount) % 10) + '0');
+        }
+        else
+        {
+          // Leave other characters unchanged
+          return c;
+        }
+      }
+
+      // Function to shift a character backward within alphanumeric ranges
+      constexpr char shift_char_backward(char c, int shift_amount)
+      {
+        if (c >= 'A' && c <= 'Z')
+        {
+          // Reverse shift within uppercase letters
+          return static_cast<char>(((c - 'A' - shift_amount + 26) % 26) + 'A');
+        }
+        else if (c >= 'a' && c <= 'z')
+        {
+          // Reverse shift within lowercase letters
+          return static_cast<char>(((c - 'a' - shift_amount + 26) % 26) + 'a');
+        }
+        else if (c >= '0' && c <= '9')
+        {
+          // Reverse shift within digits
+          return static_cast<char>(((c - '0' - shift_amount + 10) % 10) + '0');
+        }
+        else
+        {
+          // Leave other characters unchanged
+          return c;
+        }
+      }
+
+      // Compile-time encryption function
+      template <size_t N>
+      constexpr Encrypted_String<N> encrypt(const char(&input)[N])
+      {
+        Encrypted_String<N> result{};
+
+        for (size_t i = 0; i < N - 1; ++i)
+        {
+          result.data[i] = shift_char_forward(input[i], SMM_STRING_SHIFT_AMOUNT);
+        }
+
+        result.data[N - 1] = '\0'; // Ensure null termination
+        return result;
+      }
+
+      // Runtime decryption function
+      template <size_t N>
+      std::string decrypt(const Encrypted_String<N>& enc)
+      {
+        std::string result(N - 1, '\0');
+
+        for (size_t i = 0; i < N - 1; ++i)
+        {
+          result[i] = shift_char_backward(enc.data[i], SMM_STRING_SHIFT_AMOUNT);
+        }
+
+        return result;
+      }
+    }
 
 #ifdef SMM_WIN_UWP
-  // Helper to convert std::string to std::string for UWP specifics
-  std::wstring string_to_wstring(const std::string& utf8_string);
+    // Helper to convert std::string to std::string for UWP specifics
+    std::wstring string_to_wstring(const std::string& utf8_string);
 #endif
+  } // namespace _detail
 
   // Conversion class for all messages.
   // Use this to discern id of message before
@@ -689,9 +809,9 @@ namespace smm
   using listening_interval_t = long;
 #endif
 
-  using connection_handler_t = std::function<void(const Connection&)>;
-  using disconnection_handler_t = std::function<void(const Client&, int)>;
-  using message_handler_t = std::function<void(const Client&, const Message&)>;
+  using connection_handler_t = std::function<void(Connection&)>;
+  using disconnection_handler_t = std::function<void(Client&, int)>;
+  using message_handler_t = std::function<void(Client&, Message&)>;
 
   class Client
   {
@@ -701,13 +821,13 @@ namespace smm
   public:
     int get_id() const;
     bool is_connected() const;
-    void disconnect(int reason = SMM_DISCONNECTION_NORMAL) const;
+    void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
 
-    void send(Message* message) const;
-    void send(Message message) const;
+    void send(Message* message);
+    void send(Message message);
 
     template <typename T, typename... Args>
-    void send(Args... args) const;
+    void send(Args... args);
 
     // TODO: Move assignment operator
     // TODO: Move constructor
@@ -774,9 +894,8 @@ namespace smm
     int get_id() const;
     const std::string& get_name_space() const;
 
-    // Logical-constness out the window for consistency
-    std::optional<Client> accept() const;
-    void reject() const;
+    std::optional<Client> accept();
+    void reject();
 
     Connection(int id, const std::string& name_space, _detail::_Server* server) :
       id(id),
@@ -866,7 +985,7 @@ namespace smm
       disconnection_handler_t disconnection_handler;
       message_handler_t message_handler;
 
-      void _message_handler(int sender_id, const Message& message);
+      void _message_handler(int sender_id, Message& message);
       void listening_loop(listening_interval_t interval);
 
     public:
@@ -910,24 +1029,24 @@ namespace smm
 
   // ********** Definitions **********
 
-#ifdef SMM_WIN_UWP
-  inline std::wstring string_to_wstring(const std::string& utf8_string)
-  {
-    // Determine the size of the resulting wide string
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, NULL, 0);
-
-    // Create a wide string to hold the converted result
-    std::wstring wide_string(size_needed - 1, 0); // size_needed includes null terminator, so exclude it
-
-    // Perform the conversion
-    MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, &wide_string[0], size_needed);
-
-    return wide_string;
-  }
-#endif
-
   namespace _detail
   {
+#ifdef SMM_WIN_UWP
+    inline std::wstring string_to_wstring(const std::string& utf8_string)
+    {
+      // Determine the size of the resulting wide string
+      int size_needed = MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, NULL, 0);
+
+      // Create a wide string to hold the converted result
+      std::wstring wide_string(size_needed - 1, 0); // size_needed includes null terminator, so exclude it
+
+      // Perform the conversion
+      MultiByteToWideChar(CP_UTF8, 0, utf8_string.c_str(), -1, &wide_string[0], size_needed);
+
+      return wide_string;
+    }
+#endif
+
 #ifdef _WIN32
     inline void CALLBACK High_Precision_Timer::timer_proc(UINT u_timer_id, UINT u_msg, DWORD_PTR dw_user, DWORD_PTR dw1, DWORD_PTR dw2)
     {
@@ -1244,8 +1363,14 @@ namespace smm
       this->file_mapping = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, static_cast<DWORD>(size), string_to_wstring(name).data());
 #else
       this->file_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(size), name.data());
+      //TODO: Handle errors. GetLastError()
 #endif
-      // return this->file_mapping != nullptr;
+       //return this->file_mapping != nullptr;
+
+      if (!this->file_mapping)
+      {
+        return false;
+      }
 #else
       int shm_fd = shm_open(name.data(), O_CREAT | O_RDWR, 0666);
 
@@ -1287,13 +1412,27 @@ namespace smm
     // Check is_channel_created() to see if that's the case.
     inline bool _Channel::create_channel(int id, const std::string& name_space)
     {
-      std::string id_string = std::to_string(id);
-
       // Construct mapping and semaphore id strings.
-      // Isolates from global namespace to user specified namespace.
-      // By allowing a custom namespace we can connect to a UWP sandbox.
-      std::string file_mapping_name = name_space + "/" + id_string + ".mapping";
-      std::string semaphore_name = name_space + "/" + id_string + ".signal";
+      // By accepting namespaces we can connect to pre-defined UWP sandboxes.
+
+      std::string id_string = std::to_string(id);
+      std::string slash;
+
+      if (name_space.empty())
+      {
+        slash = "";
+      }
+      else
+      {
+#ifdef _WIN32;
+        slash = "\\";
+#else
+        slash = "/";
+#endif
+      }
+
+      std::string file_mapping_name = name_space + slash + id_string + string::encrypt(".mapping").get();
+      std::string semaphore_name = name_space + slash + id_string + string::encrypt(".signal").get();
 
       constexpr std::size_t shared_memory_size =
         Shared_Queue<Message_Packet>::get_control_block_size()
@@ -1341,7 +1480,7 @@ namespace smm
       this->received_signal.close();
     }
 
-    // Constructor. ID must be unique
+    // ID must be unique
     inline _Channel::_Channel(int id, const std::string& name_space)
     {
       this->create_channel(id, name_space);
@@ -1384,23 +1523,23 @@ namespace smm
     return this->shared->get_id();
   }
 
-  inline void Client::disconnect(int reason) const
+  inline void Client::disconnect(int reason)
   {
     this->shared->disconnect(reason);
   }
 
-  inline void Client::send(Message* message) const
+  inline void Client::send(Message* message)
   {
     this->shared->send(message);
   }
 
-  inline void Client::send(Message message) const
+  inline void Client::send(Message message)
   {
     this->shared->send(&message);
   }
 
   template <typename T, typename... Args>
-  inline void Client::send(Args... args) const
+  inline void Client::send(Args... args)
   {
     this->shared->send<T>(std::forward<Args>(args)...);
   }
@@ -1552,7 +1691,12 @@ namespace smm
     return this->id;
   }
 
-  inline std::optional<Client> Connection::accept() const
+  inline const std::string& Connection::get_name_space() const
+  {
+    return this->name_space;
+  }
+
+  inline std::optional<Client> Connection::accept()
   {
     auto client_exists = this->server->clients.find_if([id = this->id](const Client& client)
     {
@@ -1573,7 +1717,7 @@ namespace smm
     return new_client;
   }
 
-  inline void Connection::reject() const
+  inline void Connection::reject()
   {
     // Nothing here for now. This used to update the handled state
     // but the current implementation doesn't need it anymore.
@@ -1662,7 +1806,7 @@ namespace smm
       this->send(&message);
     }
 
-    // Constructor. ID must be unique
+    // ID must be unique
     // This is not meant to be called by end-users.
     inline _Client::_Client(int id, const std::string& name_space, _Server* server) :
       server(server)
@@ -1675,7 +1819,7 @@ namespace smm
       this->close();
     }
 
-    inline void _Server::_message_handler(int sender_id, const Message& message)
+    inline void _Server::_message_handler(int sender_id, Message& message)
     {
       Client sender;
 
@@ -2030,13 +2174,13 @@ namespace smm
       other.listening_loop_running.store(false);
     }
 
-    // Constructor. ID must be unique
+    // ID must be unique
     inline _Server::_Server(int id, const std::string& name_space, message_handler_t message_handler)
     {
       this->create(id, name_space, message_handler);
     }
 
-    // Constructor. ID must be unique
+    // ID must be unique
     inline _Server::_Server(int id, message_handler_t message_handler)
     {
       this->create(id, message_handler);
