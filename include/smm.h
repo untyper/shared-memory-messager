@@ -96,7 +96,8 @@
 #define SMM_MESSAGE_ID_DISCONNECTION -3
 
 // Generic client ids
-#define SMM_SENDER_ID_UNKNOWN -1
+#define SMM_CLIENT_ID_UNKNOWN -1
+#define SMM_SENDER_ID_UNKNOWN SMM_CLIENT_ID_UNKNOWN
 
 // Disconnection reason codes
 #define SMM_DISCONNECTION_NORMAL -1
