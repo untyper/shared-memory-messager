@@ -853,10 +853,11 @@ namespace smm
     std::shared_ptr<_detail::_Server> shared{ nullptr };
 
   public:
-    bool is_thread_running();
-    bool is_open();
-    std::vector<Client> get_clients();
-    const message_handler_t& get_handler();
+    bool is_thread_running() const;
+    bool is_open() const;
+    std::optional<Client> get_client(int id) const;
+    std::vector<Client> get_clients() const;
+    const message_handler_t& get_handler() const;
 
     bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
     std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
@@ -990,9 +991,11 @@ namespace smm
       void listening_loop(listening_interval_t interval);
 
     public:
-      bool is_thread_running();
-      bool is_open();
-      const message_handler_t& get_handler();
+      bool is_thread_running() const;
+      bool is_open() const;
+      std::optional<Client> get_client(int id) const;
+      std::vector<Client> get_clients() const;
+      const message_handler_t& get_handler() const;
 
       bool listen(message_handler_t message_handler, listening_interval_t interval = 1);
       std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
@@ -1571,38 +1574,27 @@ namespace smm
     this->shared = shared;
   }
 
-  inline bool Server::is_thread_running()
+  inline bool Server::is_thread_running() const
   {
     return this->shared->is_thread_running();
   }
 
-  inline bool Server::is_open()
+  inline bool Server::is_open() const
   {
     return this->shared->is_open();
   }
 
-  // Converts Safe_Array to vector for idiomatic usage
-  inline std::vector<Client> Server::get_clients()
+  std::optional<Client> Server::get_client(int id) const
   {
-    std::vector<Client> clients;
-
-    auto& safe_clients = this->shared->clients;
-    std::size_t capacity = safe_clients.capacity();
-
-    for (int i = 0; i < capacity; ++i)
-    {
-      auto client_exists = safe_clients.at(i);
-
-      if (client_exists)
-      {
-        clients.push_back(client_exists->value);
-      }
-    }
-
-    return clients;
+    return this->shared->get_client(id);
   }
 
-  inline const message_handler_t& Server::get_handler()
+  inline std::vector<Client> Server::get_clients() const
+  {
+    return this->shared->get_clients();
+  }
+
+  inline const message_handler_t& Server::get_handler() const
   {
     return this->shared->get_handler();
   }
@@ -1927,18 +1919,58 @@ namespace smm
 
     // Use this in combination with is_channel_created() to (for example)
     // check if the current client object can be reassigned to a new channel
-    inline bool _Server::is_thread_running()
+    inline bool _Server::is_thread_running() const
     {
       return this->listening_loop_running.load();
     }
 
-    inline bool _Server::is_open()
+    inline bool _Server::is_open() const
     {
       return this->open.load();
     }
 
+    inline std::optional<Client> _Server::get_client(int id) const
+    {
+      auto& safe_clients = this->clients;
+      std::size_t capacity = safe_clients.capacity();
+
+      for (int i = 0; i < capacity; ++i)
+      {
+        auto client_exists = safe_clients.at(i);
+
+        if (client_exists && client_exists->value.get_id() == id)
+        {
+          return client_exists->value; // Client
+        }
+      }
+
+      // No client found, return falsy
+      return std::nullopt;
+    }
+
+    // Converts Safe_Array to vector for idiomatic usage
+    inline std::vector<Client> _Server::get_clients() const
+    {
+      std::vector<Client> clients;
+
+      auto& safe_clients = this->clients;
+      std::size_t capacity = safe_clients.capacity();
+
+      for (int i = 0; i < capacity; ++i)
+      {
+        auto client_exists = safe_clients.at(i);
+
+        if (client_exists)
+        {
+          clients.push_back(client_exists->value);
+        }
+      }
+
+      return clients;
+    }
+
     // This can be used to check if a handler is already set
-    inline const message_handler_t& _Server::get_handler()
+    inline const message_handler_t& _Server::get_handler() const
     {
       return this->message_handler;
     }
