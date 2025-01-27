@@ -1584,7 +1584,7 @@ namespace smm
     return this->shared->is_open();
   }
 
-  std::optional<Client> Server::get_client(int id) const
+  inline std::optional<Client> Server::get_client(int id) const
   {
     return this->shared->get_client(id);
   }
