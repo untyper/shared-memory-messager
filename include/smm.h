@@ -1714,6 +1714,12 @@ namespace smm
   {
     // Nothing here for now. This used to update the handled state
     // but the current implementation doesn't need it anymore.
+
+    // TODO:
+    //  Send connection rejected response message to handle cases where
+    //  client is already connected. We can also use this to create a generate_id()
+    //  method to continuously try to get a unique id that isn't already associated with a client?
+    //  (Look into it more)
   }
 
   namespace _detail
