@@ -18,7 +18,7 @@
 #include <utility>
 #include <cstddef>
 #include <type_traits>
-//#include <iostream> // Debugging
+//#include <iostream>
 
 #ifdef _WIN32
 // Windows includes
@@ -868,8 +868,8 @@ namespace smm
     std::optional<Client> connect(int target_id);
     std::future<std::optional<Client>> connect_async(int target_id);
 
-    void close();
-    std::future<void> close_async();
+    void close(bool wait_until_messages_handled = true);
+    std::future<void> close_async(bool wait_until_messages_handled = true);
 
     bool create(int id, const std::string& name_space);
     bool create(int id);
@@ -977,7 +977,6 @@ namespace smm
       High_Precision_Timer timer;
       std::shared_future<bool> listening_thread;
 
-      std::atomic<bool> listening_async{ false };
       std::atomic<bool> listening_loop_running{ false };
       std::atomic<bool> open{ false };
 
@@ -1006,8 +1005,8 @@ namespace smm
       std::optional<Client> connect(int target_id);
       std::future<std::optional<Client>> connect_async(int target_id);
 
-      void close();
-      std::future<void> close_async();
+      void close(bool wait_until_messages_handled = true);
+      std::future<void> close_async(bool wait_until_messages_handled = true);
 
       bool create(int id, const std::string& name_space);
       bool create(int id);
@@ -1629,14 +1628,14 @@ namespace smm
     return this->shared->connect_async(target_id);
   }
 
-  inline void Server::close()
+  inline void Server::close(bool wait_until_messages_handled)
   {
-    this->shared->close();
+    this->shared->close(wait_until_messages_handled);
   }
 
-  inline std::future<void> Server::close_async()
+  inline std::future<void> Server::close_async(bool wait_until_messages_handled)
   {
-    return this->shared->close_async();
+    return this->shared->close_async(wait_until_messages_handled);
   }
 
   inline bool Server::create(int id, const std::string& name_space)
@@ -2009,7 +2008,6 @@ namespace smm
 
       // Launch async operation and store shared future
       this->listening_thread = std::async(std::launch::async, &_Server::listen, this, message_handler, interval).share();
-      this->listening_async.store(true);
 
       return this->listening_thread;
     }
@@ -2104,27 +2102,41 @@ namespace smm
     }
 
     // Close channel (for example) before reassigning to a new channel
-    inline void _Server::close()
+    inline void _Server::close(bool wait_until_messages_handled)
     {
+      if (!this->open.load())
+      {
+        return;
+      }
+
       // Mark as closed, to disallow more sends
       this->open.store(false);
 
-      // Wait until all remaining messages in message_queue are processed
-      // TODO: Timeout?
-      while (!this->message_queue.is_empty())
+      if (wait_until_messages_handled)
       {
-        // TODO?: Change sleep to 1ms instead for consistency?
-        this->timer.sleep(10); // Sleep to avoid busy waiting
+        // Wait until all remaining messages in message_queue are processed
+        // TODO?: Change sleep_time to 1ms instead for consistency?
+        // TODO?: Semaphore instead of sleep?
+        // TODO?: Currently timeout is hardcoded at 10s.
+        //        Maybe allow user to change it via a parameter arg?
+        constexpr int sleep_time = 10;
+        constexpr int timeout = 10000; // 10s
+        int time_passed = 0;
+
+        while (!this->message_queue.is_empty())
+        {
+          if (time_passed >= timeout)
+          {
+            break;
+          }
+
+          this->timer.sleep(sleep_time); // Sleep to avoid busy waiting
+          time_passed += sleep_time;
+        }
       }
 
       // Signal to message threads to terminate
       this->listening_loop_running.store(false);
-
-      // Join threads with main thread
-      if (this->listening_async.load())
-      {
-        this->listening_thread.get();
-      }
 
       // Disconnect all clients in clients
       // When thats done, there will no longer be open handles to the shared memory, and thus the OS will free it
@@ -2144,9 +2156,9 @@ namespace smm
       _Channel::close();
     }
 
-    inline std::future<void> _Server::close_async()
+    inline std::future<void> _Server::close_async(bool wait_until_messages_handled)
     {
-      return std::async(std::launch::async, &_Server::close, this);
+      return std::async(std::launch::async, &_Server::close, this, wait_until_messages_handled);
     }
 
     inline bool _Server::create(int id, const std::string& name_space)
@@ -2181,11 +2193,9 @@ namespace smm
         this->listening_thread = std::move(other.listening_thread);
         this->message_handler = std::move(other.message_handler);
 
-        this->listening_async.store(other.listening_async.load());
         this->listening_loop_running.store(other.listening_loop_running.load());
 
         // Reset other to indicate moved-from state
-        other.listening_async.store(false);
         other.listening_loop_running.store(false);
       }
 
@@ -2198,11 +2208,9 @@ namespace smm
       listening_thread(std::move(other.listening_thread)),
       message_handler(std::move(other.message_handler))
     {
-      this->listening_async.store(other.listening_async.load());
       this->listening_loop_running.store(other.listening_loop_running.load());
 
       // Reset other to indicate moved-from state
-      other.listening_async.store(false);
       other.listening_loop_running.store(false);
     }
 
