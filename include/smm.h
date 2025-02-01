@@ -860,7 +860,7 @@ namespace smm
     const message_handler_t& get_handler() const;
 
     bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
-    std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+    const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
 
     void on_connection(connection_handler_t connection_handler);
     void on_disconnection(disconnection_handler_t disconnection_handler);
@@ -871,11 +871,11 @@ namespace smm
     void close();
     std::future<void> close_async();
 
-    bool create(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
-    bool create(int id, message_handler_t message_handler = nullptr);
+    bool create(int id, const std::string& name_space);
+    bool create(int id);
 
-    Server(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
-    Server(int id, message_handler_t message_handler = nullptr);
+    Server(int id, const std::string& name_space);
+    Server(int id);
     Server();
 
     friend class Client;
@@ -975,7 +975,7 @@ namespace smm
     {
     protected:
       High_Precision_Timer timer;
-      std::future<bool> listening_thread;
+      std::shared_future<bool> listening_thread;
 
       std::atomic<bool> listening_async{ false };
       std::atomic<bool> listening_loop_running{ false };
@@ -998,7 +998,7 @@ namespace smm
       const message_handler_t& get_handler() const;
 
       bool listen(message_handler_t message_handler, listening_interval_t interval = 1);
-      std::future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+      const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
 
       void on_connection(connection_handler_t& connection_handler);
       void on_disconnection(disconnection_handler_t& disconnection_handler);
@@ -1009,8 +1009,8 @@ namespace smm
       void close();
       std::future<void> close_async();
 
-      bool create(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
-      bool create(int id, message_handler_t message_handler = nullptr);
+      bool create(int id, const std::string& name_space);
+      bool create(int id);
 
       _Server& operator=(const _Server&) = delete;
       _Server& operator=(_Server&& other) noexcept;
@@ -1019,8 +1019,8 @@ namespace smm
       _Server() {};
       ~_Server();
 
-      _Server(int id, const std::string& name_space, message_handler_t message_handler = nullptr);
-      _Server(int id, message_handler_t message_handler = nullptr);
+      _Server(int id, const std::string& name_space);
+      _Server(int id);
 
       friend class Client;
       friend class Server;
@@ -1604,7 +1604,7 @@ namespace smm
     return this->shared->listen(message_handler, interval);
   }
 
-  inline std::future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
+  inline const std::shared_future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
   {
     return this->shared->listen_async(message_handler, interval);
   }
@@ -1639,23 +1639,23 @@ namespace smm
     return this->shared->close_async();
   }
 
-  inline bool Server::create(int id, const std::string& name_space, message_handler_t message_handler)
+  inline bool Server::create(int id, const std::string& name_space)
   {
-    return this->shared->create(id, name_space, message_handler);
+    return this->shared->create(id, name_space);
   }
 
-  inline bool Server::create(int id, message_handler_t message_handler)
+  inline bool Server::create(int id)
   {
-    return this->shared->create(id, message_handler);
+    return this->shared->create(id);
   }
 
-  inline Server::Server(int id, const std::string& name_space, message_handler_t message_handler)
+  inline Server::Server(int id, const std::string& name_space)
   {
     // TODO:
     //  Maybe first check a global fixed sized shared memory block to see if client with specific ID already exists?
     //  ^ Would this even work with UWP?
 
-    this->shared = std::make_shared<_detail::_Server>(id, name_space, message_handler);
+    this->shared = std::make_shared<_detail::_Server>(id, name_space);
 
     if (!this->shared->open.load())
     {
@@ -1663,9 +1663,9 @@ namespace smm
     }
   }
 
-  inline Server::Server(int id, message_handler_t message_handler)
+  inline Server::Server(int id)
   {
-    this->shared = std::make_shared<_detail::_Server>(id, message_handler);
+    this->shared = std::make_shared<_detail::_Server>(id);
 
     if (!this->shared->open.load())
     {
@@ -1996,22 +1996,21 @@ namespace smm
       return true;
     }
 
-    inline std::future<bool>& _Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
-    {
-      // Promisify return value
-      std::promise<bool> promise;
-      this->listening_thread = promise.get_future();
-
+    inline const std::shared_future<bool>& _Server::listen_async(message_handler_t message_handler, listening_interval_t interval) {
+      // Promisify return value.
       // Only spawn a new thread if not already running
       if (this->listening_loop_running.load())
       {
+        std::promise<bool> promise;
         promise.set_value(false);
+        this->listening_thread = promise.get_future().share(); // Store a shared future
         return this->listening_thread;
       }
 
-      //this->listening_thread = std::thread(&_Server::listen, this, message_handler, interval);
-      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, message_handler, interval);
+      // Launch async operation and store shared future
+      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, message_handler, interval).share();
       this->listening_async.store(true);
+
       return this->listening_thread;
     }
 
@@ -2150,7 +2149,7 @@ namespace smm
       return std::async(std::launch::async, &_Server::close, this);
     }
 
-    inline bool _Server::create(int id, const std::string& name_space, message_handler_t message_handler)
+    inline bool _Server::create(int id, const std::string& name_space)
     {
       // Only closed client instances can create a channel.
       if (this->open.load())
@@ -2163,19 +2162,13 @@ namespace smm
         return false;
       }
 
-      if (message_handler != nullptr)
-      {
-        // TODO: Error checking
-        this->listen_async(message_handler);
-      }
-
       this->open.store(true);
       return true; // Success!
     }
 
-    inline bool _Server::create(int id, message_handler_t message_handler)
+    inline bool _Server::create(int id)
     {
-      return this->create(id, "", message_handler);
+      return this->create(id, "");
     }
 
     // Move assignment operator
@@ -2214,15 +2207,15 @@ namespace smm
     }
 
     // ID must be unique
-    inline _Server::_Server(int id, const std::string& name_space, message_handler_t message_handler)
+    inline _Server::_Server(int id, const std::string& name_space)
     {
-      this->create(id, name_space, message_handler);
+      this->create(id, name_space);
     }
 
     // ID must be unique
-    inline _Server::_Server(int id, message_handler_t message_handler)
+    inline _Server::_Server(int id)
     {
-      this->create(id, message_handler);
+      this->create(id);
     }
 
     inline _Server::~_Server()
