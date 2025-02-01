@@ -53,10 +53,12 @@
 
 // TODO:
 // - (Important)  Keep alive mechanism to remove abruptly disconnected clients
+// - (Important?) Error codes instead of booleans?
 // - (Important?) Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
 // - (Important?) Proper error handling to handle initialization failures.
 // - (Important?) Test on Unix. No tests have been conducted on Unix yet.
 // - (Desried)    Increase timer delay precision and add an interval parameter to client::send
+// - (Desried)    Mark functions noexcept where appropriate.
 // - (Desired)    Better comments.
 
 // DEV NOTES FOR FUTURE MAINTENANCE:
