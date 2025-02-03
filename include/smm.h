@@ -822,8 +822,9 @@ namespace smm
     std::shared_ptr<_detail::_Client> shared{ nullptr };
 
   public:
-    int get_id() const;
+    bool is_valid() const;
     bool is_connected() const;
+    int get_id() const;
     void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
 
     void send(Message* message);
@@ -855,6 +856,7 @@ namespace smm
     std::shared_ptr<_detail::_Server> shared{ nullptr };
 
   public:
+    bool is_valid() const;
     bool is_thread_running() const;
     bool is_open() const;
     std::optional<Client> get_client(int id) const;
@@ -1518,6 +1520,12 @@ namespace smm
     this->set_content_as(id, content);
   }
 
+  // Returns true if underlying shared_ptr points to a valid _Client
+  inline bool Client::is_valid() const
+  {
+    return (this->shared != nullptr);
+  }
+
   inline bool Client::is_connected() const
   {
     return this->shared->is_connected();
@@ -1573,6 +1581,12 @@ namespace smm
   inline Client::Client(const std::shared_ptr<_detail::_Client>& shared)
   {
     this->shared = shared;
+  }
+
+  // Returns true if underlying shared_ptr points to a valid _Server
+  inline bool Server::is_valid() const
+  {
+    return (this->shared != nullptr);
   }
 
   inline bool Server::is_thread_running() const
