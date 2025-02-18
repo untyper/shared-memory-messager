@@ -825,13 +825,13 @@ namespace smm
     bool is_valid() const;
     bool is_connected() const;
     int get_id() const;
-    void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
+    void disconnect(int reason = SMM_DISCONNECTION_NORMAL) const;
 
-    void send(Message* message);
-    void send(Message message);
+    void send(Message* message) const;
+    void send(Message message) const;
 
     template <typename T, typename... Args>
-    void send(Args... args);
+    void send(Args... args) const;
 
     // TODO: Move assignment operator
     // TODO: Move constructor
@@ -863,20 +863,20 @@ namespace smm
     std::vector<Client> get_clients() const;
     const message_handler_t& get_handler() const;
 
-    bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
-    const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+    bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1) const;
+    const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1) const;
 
-    void on_connection(connection_handler_t connection_handler);
-    void on_disconnection(disconnection_handler_t disconnection_handler);
+    void on_connection(connection_handler_t connection_handler) const;
+    void on_disconnection(disconnection_handler_t disconnection_handler) const;
 
-    std::optional<Client> connect(int target_id);
-    std::future<std::optional<Client>> connect_async(int target_id);
+    std::optional<Client> connect(int target_id) const;
+    std::future<std::optional<Client>> connect_async(int target_id) const;
 
-    void close(bool wait_until_messages_handled = true);
-    std::future<void> close_async(bool wait_until_messages_handled = true);
+    void close(bool wait_until_messages_handled = true) const;
+    std::future<void> close_async(bool wait_until_messages_handled = true) const;
 
-    bool create(int id, const std::string& name_space);
-    bool create(int id);
+    bool create(int id, const std::string& name_space) const;
+    bool create(int id) const;
 
     Server(int id, const std::string& name_space);
     Server(int id);
@@ -1009,8 +1009,8 @@ namespace smm
       std::optional<Client> connect(int target_id);
       std::future<std::optional<Client>> connect_async(int target_id);
 
-      void close(bool wait_until_messages_handled = true);
-      std::future<void> close_async(bool wait_until_messages_handled = true);
+      void close(bool wait_until_messages_handled = true, int timeout = 4000);
+      std::future<void> close_async(bool wait_until_messages_handled = true, int timeout = 4000);
 
       bool create(int id, const std::string& name_space);
       bool create(int id);
@@ -1536,23 +1536,23 @@ namespace smm
     return this->shared->get_id();
   }
 
-  inline void Client::disconnect(int reason)
+  inline void Client::disconnect(int reason) const
   {
     this->shared->disconnect(reason);
   }
 
-  inline void Client::send(Message* message)
+  inline void Client::send(Message* message) const
   {
     this->shared->send(message);
   }
 
-  inline void Client::send(Message message)
+  inline void Client::send(Message message) const
   {
     this->shared->send(&message);
   }
 
   template <typename T, typename... Args>
-  inline void Client::send(Args... args)
+  inline void Client::send(Args... args) const
   {
     this->shared->send<T>(std::forward<Args>(args)...);
   }
@@ -1614,52 +1614,52 @@ namespace smm
     return this->shared->get_handler();
   }
 
-  inline bool Server::listen(message_handler_t message_handler, listening_interval_t interval)
+  inline bool Server::listen(message_handler_t message_handler, listening_interval_t interval) const
   {
     return this->shared->listen(message_handler, interval);
   }
 
-  inline const std::shared_future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval)
+  inline const std::shared_future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval) const
   {
     return this->shared->listen_async(message_handler, interval);
   }
 
-  inline void Server::on_connection(connection_handler_t connection_handler)
+  inline void Server::on_connection(connection_handler_t connection_handler) const
   {
     this->shared->on_connection(connection_handler);
   }
 
-  inline void Server::on_disconnection(disconnection_handler_t disconnection_handler)
+  inline void Server::on_disconnection(disconnection_handler_t disconnection_handler) const
   {
     this->shared->on_disconnection(disconnection_handler);
   }
 
-  inline std::optional<Client> Server::connect(int target_id)
+  inline std::optional<Client> Server::connect(int target_id) const
   {
     return this->shared->connect(target_id);
   }
 
-  inline std::future<std::optional<Client>> Server::connect_async(int target_id)
+  inline std::future<std::optional<Client>> Server::connect_async(int target_id) const
   {
     return this->shared->connect_async(target_id);
   }
 
-  inline void Server::close(bool wait_until_messages_handled)
+  inline void Server::close(bool wait_until_messages_handled) const
   {
     this->shared->close(wait_until_messages_handled);
   }
 
-  inline std::future<void> Server::close_async(bool wait_until_messages_handled)
+  inline std::future<void> Server::close_async(bool wait_until_messages_handled) const
   {
     return this->shared->close_async(wait_until_messages_handled);
   }
 
-  inline bool Server::create(int id, const std::string& name_space)
+  inline bool Server::create(int id, const std::string& name_space) const
   {
     return this->shared->create(id, name_space);
   }
 
-  inline bool Server::create(int id)
+  inline bool Server::create(int id) const
   {
     return this->shared->create(id);
   }
@@ -2118,7 +2118,7 @@ namespace smm
     }
 
     // Close channel (for example) before reassigning to a new channel
-    inline void _Server::close(bool wait_until_messages_handled)
+    inline void _Server::close(bool wait_until_messages_handled, int timeout)
     {
       if (!this->open.load())
       {
@@ -2133,10 +2133,8 @@ namespace smm
         // Wait until all remaining messages in message_queue are processed
         // TODO?: Change sleep_time to 1ms instead for consistency?
         // TODO?: Semaphore instead of sleep?
-        // TODO?: Currently timeout is hardcoded at 10s.
         //        Maybe allow user to change it via a parameter arg?
         constexpr int sleep_time = 10;
-        constexpr int timeout = 10000; // 10s
         int time_passed = 0;
 
         while (!this->message_queue.is_empty())
@@ -2172,9 +2170,9 @@ namespace smm
       _Channel::close();
     }
 
-    inline std::future<void> _Server::close_async(bool wait_until_messages_handled)
+    inline std::future<void> _Server::close_async(bool wait_until_messages_handled, int timeout)
     {
-      return std::async(std::launch::async, &_Server::close, this, wait_until_messages_handled);
+      return std::async(std::launch::async, &_Server::close, this, wait_until_messages_handled, timeout);
     }
 
     inline bool _Server::create(int id, const std::string& name_space)
