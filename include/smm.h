@@ -60,6 +60,7 @@
 // - (Desried)    Increase timer delay precision and add an interval parameter to client::send
 // - (Desried)    Mark functions noexcept where appropriate.
 // - (Desired)    Better comments.
+// - (Desired)    _smm_message_id should be protected and wrapped in a getter function.
 
 // DEV NOTES FOR FUTURE MAINTENANCE:
 // - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
@@ -89,7 +90,7 @@
 #endif
 
 // Non-customizeable macro definitions
-#define SMM_MESSAGE_ID static constexpr int _smm_id
+#define SMM_MESSAGE_ID int _smm_message_id
 
 // Negative message ID's are reserved for internal messages.
 // End-users should use positive integers
@@ -1813,9 +1814,9 @@ namespace smm
       T custom_message(std::forward<Args>(args)...);
 
       // NOTE:
-      //  If _smm_id is protected, end-user must declare
+      //  If _smm_message_id is protected, end-user must declare
       //  message struct as friend class of smm::Message
-      int id = custom_message._smm_id;
+      int id = custom_message._smm_message_id;
       Message message(id, custom_message);
 
       this->send(&message);
