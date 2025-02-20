@@ -93,9 +93,10 @@
 
 // Negative message ID's are reserved for internal messages.
 // End-users should use positive integers
-#define SMM_MESSAGE_ID_CONNECTION -1
-#define SMM_MESSAGE_ID_CONNECTION_RESPONSE -2
-#define SMM_MESSAGE_ID_DISCONNECTION -3
+#define SMM_MESSAGE_ID_UNKNOWN -1 // Generic message
+#define SMM_MESSAGE_ID_CONNECTION -2
+#define SMM_MESSAGE_ID_CONNECTION_RESPONSE -3
+#define SMM_MESSAGE_ID_DISCONNECTION -4
 
 // Generic client ids
 #define SMM_CLIENT_ID_UNKNOWN -1
