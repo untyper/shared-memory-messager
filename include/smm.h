@@ -753,7 +753,7 @@ namespace smm
   // Useful for switch case statements.
   // Alternatively end-user can define a message id struct instead.
   template <typename T>
-  constexpr int ID()
+  inline constexpr int ID()
   {
     return T::_smm_message_id;
   }
