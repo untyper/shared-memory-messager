@@ -90,7 +90,7 @@
 #endif
 
 // Non-customizeable macro definitions
-#define SMM_MESSAGE_ID int _smm_message_id
+#define SMM_MESSAGE_ID static constexpr int _smm_message_id
 
 // Negative message ID's are reserved for internal messages.
 // End-users should use positive integers
