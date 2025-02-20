@@ -749,6 +749,15 @@ namespace smm
     Message() {}
   };
 
+  // Helper for compile time ID getting.
+  // Useful for switch case statements.
+  // Alternatively end-user can define a message id struct instead.
+  template <typename T>
+  constexpr int ID()
+  {
+    return T::_smm_message_id;
+  }
+
   namespace _detail
   {
     struct Message_Connection
