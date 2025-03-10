@@ -17,6 +17,7 @@
 #include <array>
 #include <utility>
 #include <cstddef>
+#include <climits>
 #include <type_traits>
 //#include <iostream>
 
@@ -52,15 +53,14 @@
 //      in the UWP app and pass it to the client through a fullTrustProcess (for example).
 
 // TODO:
+// - (Important)  Namespace mechanism to isolate 3rd party program groups from different authors.
 // - (Important)  Keep alive mechanism to remove abruptly disconnected clients
 // - (Important?) Error codes instead of booleans?
 // - (Important?) Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
 // - (Important?) Proper error handling to handle initialization failures.
 // - (Important?) Test on Unix. No tests have been conducted on Unix yet.
-// - (Desried)    Increase timer delay precision and add an interval parameter to client::send
 // - (Desried)    Mark functions noexcept where appropriate.
-// - (Desired)    Better comments.
-// - (Desired)    _smm_message_id should be protected and wrapped in a getter function.
+// - (Maybe?)     Callbacks for async functions to execute code right after thread launch?
 
 // DEV NOTES FOR FUTURE MAINTENANCE:
 // - Use SMM_WIN_<NNN> format for Windows specific macro definitions.
@@ -94,10 +94,11 @@
 
 // Negative message ID's are reserved for internal messages.
 // End-users should use positive integers
-#define SMM_MESSAGE_ID_UNKNOWN -1 // Generic message
-#define SMM_MESSAGE_ID_CONNECTION -2
-#define SMM_MESSAGE_ID_CONNECTION_RESPONSE -3
-#define SMM_MESSAGE_ID_DISCONNECTION -4
+#define SMM_MESSAGE_ID_UNKNOWN -1
+#define SMM_MESSAGE_ID_NO_RESPONSE -2
+#define SMM_MESSAGE_ID_CONNECTION -3
+#define SMM_MESSAGE_ID_CONNECTION_RESPONSE -4
+#define SMM_MESSAGE_ID_DISCONNECTION -5
 
 // Generic client ids
 #define SMM_CLIENT_ID_UNKNOWN -1
@@ -149,6 +150,8 @@ namespace smm
 #endif
 
     public:
+      inline static constexpr int max_count{ 1024 };
+
       // Getters
       const std::string& get_name() const;
 
@@ -159,8 +162,8 @@ namespace smm
 #endif
 
       void close();
-      bool wait(unsigned int timeout_ms) const;
-      bool increment() const;
+      bool wait(unsigned int timeout_ms = INFINITE) const;
+      bool increment(int count = 1) const;
       bool create(const std::string& name, int initial_count = 0);
 
       // Constructor
@@ -172,7 +175,7 @@ namespace smm
       Semaphore(Semaphore&&) = default;                 // Move constructor
       Semaphore& operator=(Semaphore&&) = default;      // Move assignment
 
-      Semaphore() {} // Default constructor
+      Semaphore() = default;
       ~Semaphore();
     };
 
@@ -216,7 +219,7 @@ namespace smm
       Shared_Memory(Shared_Memory&&) = default;                 // Move constructor
       Shared_Memory& operator=(Shared_Memory&&) = default;      // Move assignment
 
-      Shared_Memory() {} // Default constructor
+      Shared_Memory() = default;
       ~Shared_Memory();
     };
 
@@ -623,7 +626,7 @@ namespace smm
       }
 
       // Default constructor
-      Shared_Queue() {}
+      Shared_Queue() = default;
     };
 
     // Basic string encryption logic
@@ -723,88 +726,6 @@ namespace smm
     // Helper to convert std::string to std::string for UWP specifics
     std::wstring string_to_wstring(const std::string& utf8_string);
 #endif
-  } // namespace _detail
-
-  // Conversion class for all messages.
-  // Use this to discern id of message before
-  // casting the content buffer to the correct id for reading...
-  struct Message
-  {
-    int id{ 0 }; // 4 bytes
-    char content[SMM_MESSAGE_SIZE - sizeof(id)] = { 0 };
-    // Total content size should be equal to
-    // a standard page size i.e. ~4096 bytes
-
-    int get_id() const;
-
-    template <typename T>
-    T get_content_as() const;
-
-    template <typename T>
-    void set_content_as(int id, T content);
-
-    // Constructors
-    template <typename T>
-    Message(int id, T content);
-    Message() {}
-  };
-
-  // Helper for compile time ID getting.
-  // Useful for switch case statements.
-  // Alternatively end-user can define a message id struct instead.
-  template <typename T>
-  inline constexpr int ID()
-  {
-    return T::_smm_message_id;
-  }
-
-  namespace _detail
-  {
-    struct Message_Connection
-    {
-      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_CONNECTION };
-      int sender_id{ SMM_SENDER_ID_UNKNOWN };
-
-      Message_Connection(int sender_id) :
-        sender_id(sender_id)
-      {
-      }
-
-      friend struct Message;
-    };
-
-    struct Message_Connection_Response
-    {
-      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_CONNECTION_RESPONSE };
-      bool success{ false };
-
-      Message_Connection_Response(bool success) :
-        success(success)
-      {
-      }
-    };
-
-    struct Message_Disconnection
-    {
-      SMM_MESSAGE_ID{ SMM_MESSAGE_ID_DISCONNECTION };
-      int sender_id{ SMM_SENDER_ID_UNKNOWN };
-      int reason{ SMM_DISCONNECTION_NORMAL };
-
-      Message_Disconnection(int sender_id, int reason = SMM_DISCONNECTION_NORMAL) :
-        sender_id(sender_id),
-        reason(reason)
-      {
-      }
-
-      friend struct Message;
-    };
-
-    // Container for message and it's metadata
-    struct Message_Packet
-    {
-      int sender_id{ 0 };
-      Message message;
-    };
 
     // Forward declarations internal implementation
     class _Channel;
@@ -816,21 +737,92 @@ namespace smm
   class Client;
   class Server;
   class Connection;
+  class Response;
+  class Request;
 
-#ifdef _WIN32
-  using listening_interval_t = UINT;
-#else
-  using listening_interval_t = long;
-#endif
+  // Conversion class for all messages.
+  // Use this to discern id of message before
+  // casting the content buffer to the correct id for reading...
+  class Message
+  {
+  protected:
+    enum class Type
+    {
+      Normal,
+      Request,
+      Response
+    };
 
-  using connection_handler_t = std::function<void(Connection&)>;
-  using disconnection_handler_t = std::function<void(Client&, int)>;
-  using message_handler_t = std::function<void(Client&, Message&)>;
+    Type type{ Type::Normal };
+    int id{ SMM_MESSAGE_ID_UNKNOWN };
+    Response* response_address{ nullptr };
+
+    // response_address is not meant to be accessed publicly in the current implementation.
+    // The caller will unblock the caller thread/process once
+    // the address stored in response_address receives response data.
+
+    char content
+    [
+      SMM_MESSAGE_SIZE
+      - sizeof(type)
+      - sizeof(id)
+      - sizeof(response_address)
+
+      // Alignment operation for 32-bit <-> 64-bit,
+      // since pointer size differs between them.
+      -((sizeof(response_address) == 8) ? 4 : 0)
+    ]{ 0 };
+    // Total content size should be equal to SMM_MESSAGE_SIZE
+
+    template <typename T>
+    void set_as(int id, const T& content);
+
+    template <typename T>
+    void set_as(int id, Message::Type type, Response* response_address, const T& content);
+
+    template <typename T>
+    Message(int id, Message::Type type, Response* response_address, const T& content);
+
+    template <typename T>
+    Message(int id, const T& content);
+
+  public:
+    int get_id() const;
+
+    template <typename T>
+    T get_as() const;
+
+    Message() = default;
+
+    friend class _detail::_Channel;
+    friend class _detail::_Client;
+    friend class _detail::_Server;
+
+    friend class Request;
+    friend class Response;
+  };
+
+  // Helper to get user ID of user defined message, at compile time.
+  // Useful for switch case statements.
+  // Used internally but encouraged to be used by end-users aswell.
+  template <typename T>
+  inline constexpr int ID()
+  {
+    return T::_smm_message_id;
+  }
+
+  using connection_handler_t = std::function<void(const Connection&)>;
+  using disconnection_handler_t = std::function<void(const Client&, int)>;
+  using message_handler_t = std::function<void(const Client&, const Message&)>;
+  using request_handler_t = std::function<void(const Request&)>;
 
   class Client
   {
   protected:
     std::shared_ptr<_detail::_Client> shared{ nullptr };
+
+    void send(Message* message) const;
+    void send(const Message& message) const;
 
   public:
     bool is_valid() const;
@@ -838,27 +830,23 @@ namespace smm
     int get_id() const;
     void disconnect(int reason = SMM_DISCONNECTION_NORMAL) const;
 
-    void send(Message* message) const;
-    void send(Message message) const;
+    template <typename T, typename... Args>
+    void send(Args&&... args) const;
 
     template <typename T, typename... Args>
-    void send(Args... args) const;
-
-    // TODO: Move assignment operator
-    // TODO: Move constructor
+    inline std::optional<Response> send_request(Args&&... args) const;
 
     Client(const std::shared_ptr<_detail::_Client>& shared);
-    Client& operator=(const Client& other);
-    Client(const Client& other);
-
-    // Maybe make _Client shared for Client too? Not really necessary for current utility though
-    Client() {}
+    Client() = default;
 
     //friend class Safe_Array;
     friend class Server;
     friend class _detail::_Channel;
     friend class _detail::_Client;
     friend class _detail::_Server;
+
+    friend class Request;
+    friend class Response;
   };
 
   class Server
@@ -868,23 +856,26 @@ namespace smm
 
   public:
     bool is_valid() const;
-    bool is_thread_running() const;
+    bool is_listening() const;
     bool is_open() const;
     std::optional<Client> get_client(int id) const;
     std::vector<Client> get_clients() const;
     const message_handler_t& get_handler() const;
 
-    bool listen(message_handler_t message_handler = nullptr, listening_interval_t interval = 1) const;
-    const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1) const;
+    void on_message(const message_handler_t& message_handler) const;
+    void on_request(const request_handler_t& request_handler) const;
 
-    void on_connection(connection_handler_t connection_handler) const;
-    void on_disconnection(disconnection_handler_t disconnection_handler) const;
+    void on_connection(const connection_handler_t& connection_handler) const;
+    void on_disconnection(const disconnection_handler_t& disconnection_handler) const;
+
+    bool listen(unsigned int interval = 1) const;
+    std::optional<std::shared_future<bool>> listen_async(unsigned int interval = 1) const;
 
     std::optional<Client> connect(int target_id) const;
-    std::future<std::optional<Client>> connect_async(int target_id) const;
+    std::optional<std::future<std::optional<Client>>> connect_async(int target_id) const;
 
-    void close(bool wait_until_messages_handled = true) const;
-    std::future<void> close_async(bool wait_until_messages_handled = true) const;
+    void close(int handle_final_messages_timeout = 0) const;
+    std::optional<std::future<void>> close_async(int handle_final_messages_timeout = 0) const;
 
     bool create(int id, const std::string& name_space) const;
     bool create(int id) const;
@@ -911,8 +902,8 @@ namespace smm
     int get_id() const;
     const std::string& get_name_space() const;
 
-    std::optional<Client> accept();
-    void reject();
+    std::optional<Client> accept() const;
+    void reject() const;
 
     Connection(int id, const std::string& name_space, _detail::_Server* server) :
       id(id),
@@ -921,17 +912,111 @@ namespace smm
     {
     }
 
-    Connection() {};
+    Connection() = default;
 
     friend class _detail::_Server;
   };
 
+  // Response wrapper class.
+  // Only serves a semantic purpose.
+  class Response : public Message
+  {
+  };
+
+  // Request wrapper class.
+  // Each request expects a response in the request handler!
+  class Request : public Message
+  {
+  protected:
+    Client client;
+    mutable std::atomic<bool> responded{ false };
+
+  public:
+    const Client& get_client() const;
+
+    template <typename T, typename... Args>
+    void respond(Args&&... args) const;
+
+    Request(const Client& client, const Message& message) :
+      Message(message),
+      client(client)
+    {
+    }
+
+    friend class _detail::_Server;
+  };
+
+  // Public Messages namespace
+  namespace Messages
+  {
+    // Generic message.
+    // End-user can choose to respond with this message directly.
+    struct Unknown
+    {
+      SMM_MESSAGE_ID = SMM_MESSAGE_ID_UNKNOWN;
+    };
+
+    // If end-user doesn't respond with a defined message structure, the internal
+    // request handler will send this default response message back instead.
+    // End-user should not explicitly use this in their code.
+    struct No_Response
+    {
+      SMM_MESSAGE_ID = SMM_MESSAGE_ID_NO_RESPONSE;
+    };
+  }
+
   namespace _detail
   {
+    // Internal Messages namespace
+    namespace Messages
+    {
+      struct Connection
+      {
+        SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION;
+        int sender_id{ SMM_SENDER_ID_UNKNOWN };
+
+        Connection(int sender_id) :
+          sender_id(sender_id)
+        {
+        }
+      };
+
+      struct Connection_Response
+      {
+        SMM_MESSAGE_ID = SMM_MESSAGE_ID_CONNECTION_RESPONSE;
+        bool success{ false };
+
+        Connection_Response(bool success) :
+          success(success)
+        {
+        }
+      };
+
+      struct Disconnection
+      {
+        SMM_MESSAGE_ID = SMM_MESSAGE_ID_DISCONNECTION;
+        int sender_id{ SMM_SENDER_ID_UNKNOWN };
+        int reason{ SMM_DISCONNECTION_NORMAL };
+
+        Disconnection(int sender_id, int reason = SMM_DISCONNECTION_NORMAL) :
+          sender_id(sender_id),
+          reason(reason)
+        {
+        }
+      };
+    }
+
+    // Container for message and it's metadata
+    struct Message_Packet
+    {
+      int sender_id{ 0 };
+      Message message;
+    };
+
     class _Channel
     {
     protected:
-      Semaphore received_signal;
+      Semaphore message_signal;
       Shared_Memory shared_memory;
       Shared_Queue<Message_Packet> message_queue;
 
@@ -940,6 +1025,7 @@ namespace smm
       int id{ -1 };
       std::string name_space;
 
+      static std::string create_name(int id, const std::string& name_space, const char* variable);
       bool create_channel(int id, const std::string& name_space);
 
     public:
@@ -948,8 +1034,8 @@ namespace smm
       const std::string& get_name_space() const;
       void close();
 
-      _Channel() {}
       _Channel(int id, const std::string& name_space);
+      _Channel() = default;
 
       friend class Client;
       friend class Server;
@@ -961,23 +1047,33 @@ namespace smm
     {
     protected:
       std::atomic<bool> connected{ false };
-      _Server* server = { nullptr };
+      _Server* server{ nullptr };
+
+      template <typename T>
+      Message construct_message(const T& custom_message, Message::Type type, Response* response_address);
 
       bool open(int id, const std::string& name_space);
       void close();
+
+      template <typename T, typename... Args>
+      void _send(Message::Type message_type, Response* response_address, Args&&... args);
 
     public:
       int get_id() const;
       bool is_connected() const;
       void disconnect(int reason = SMM_DISCONNECTION_NORMAL);
 
-      void send(Message* message);
+      void send(const Message* message);
 
       template <typename T, typename... Args>
       void send(Args&&... args);
 
+      template <typename T, typename... Args>
+      std::optional<Response> send_request(Args&&... args);
+
       _Client(int id, const std::string& name_space, _Server* server);
-      _Client() {}
+
+      _Client() = default;
       ~_Client();
 
       friend class Client;
@@ -989,52 +1085,64 @@ namespace smm
     class _Server : public _Channel
     {
     protected:
-      High_Precision_Timer timer;
-      std::shared_future<bool> listening_thread;
+      Semaphore response_signal;
+      Semaphore listening_ended_signal;
 
       std::atomic<bool> listening_loop_running{ false };
+      std::atomic<std::thread::id> closing_thread_id;
+      std::atomic<std::thread::id> listening_thread_id;
+      std::shared_future<bool> listening_thread;
+
+      High_Precision_Timer timer;
       std::atomic<bool> open{ false };
 
       Safe_Array<Client, SMM_MAX_CLIENTS_PER_SERVER> clients;
 
+      message_handler_t message_handler{ [](const Client&, const Message&) {} };;
+      request_handler_t request_handler{ [](const Request&) {} };
+
       connection_handler_t connection_handler;
       disconnection_handler_t disconnection_handler;
-      message_handler_t message_handler;
 
       void _message_handler(int sender_id, Message& message);
-      void listening_loop(listening_interval_t interval);
+      void listening_loop(unsigned int interval);
+      bool create_local_signaling(int id, const std::string& name_space);
 
     public:
-      bool is_thread_running() const;
+      bool is_listening() const;
       bool is_open() const;
       std::optional<Client> get_client(int id) const;
       std::vector<Client> get_clients() const;
       const message_handler_t& get_handler() const;
 
-      bool listen(message_handler_t message_handler, listening_interval_t interval = 1);
-      const std::shared_future<bool>& listen_async(message_handler_t message_handler = nullptr, listening_interval_t interval = 1);
+      void on_message(const message_handler_t& message_handler);
+      void on_request(const request_handler_t& request_handler);
 
-      void on_connection(connection_handler_t& connection_handler);
-      void on_disconnection(disconnection_handler_t& disconnection_handler);
+      void on_connection(const connection_handler_t& connection_handler);
+      void on_disconnection(const disconnection_handler_t& disconnection_handler);
+
+      bool listen(unsigned int interval = 1);
+      std::optional<std::shared_future<bool>> listen_async(unsigned int interval = 1);
 
       std::optional<Client> connect(int target_id);
-      std::future<std::optional<Client>> connect_async(int target_id);
+      std::optional<std::future<std::optional<Client>>> connect_async(int target_id);
 
-      void close(bool wait_until_messages_handled = true, int timeout = 4000);
-      std::future<void> close_async(bool wait_until_messages_handled = true, int timeout = 4000);
+      void close(int handle_final_messages_timeout = 0);
+      std::optional<std::future<void>> close_async(int handle_final_messages_timeout = 0);
 
       bool create(int id, const std::string& name_space);
       bool create(int id);
+
+      _Server(int id, const std::string& name_space);
+      _Server(int id);
 
       _Server& operator=(const _Server&) = delete;
       _Server& operator=(_Server&& other) noexcept;
       _Server(const _Server&) = delete;
       _Server(_Server&& other) noexcept;
-      _Server() {};
-      ~_Server();
+      _Server() = default;
 
-      _Server(int id, const std::string& name_space);
-      _Server(int id);
+      ~_Server();
 
       friend class Client;
       friend class Server;
@@ -1044,8 +1152,6 @@ namespace smm
       friend class _Client;
     };
   } // namespace _detail
-
-  // ********** Definitions **********
 
   namespace _detail
   {
@@ -1160,6 +1266,9 @@ namespace smm
         return;
       }
 
+      // Release any blocked threads.
+      this->increment(Semaphore::max_count);
+
 #ifdef _WIN32
       CloseHandle(this->object);
 #else
@@ -1209,7 +1318,7 @@ namespace smm
 #endif
     }
 
-    inline bool Semaphore::increment() const
+    inline bool Semaphore::increment(int count) const
     {
       if (this->object == nullptr)
       {
@@ -1217,9 +1326,19 @@ namespace smm
       }
 
 #ifdef _WIN32
-      return ReleaseSemaphore(this->object, 1, nullptr);
+      return ReleaseSemaphore(this->object, count, nullptr);
 #else
-      return sem_post(this->object) == 0;
+      bool success = true;
+
+      for (int i = 0; i < count; ++i)
+      {
+        if (sem_post(this->object) != 0)
+        {
+          success = false;
+        }
+      }
+
+      return success;
 #endif
     }
 
@@ -1425,14 +1544,8 @@ namespace smm
 
     // _Channel, base of _Client and _Server
 
-    // Create communication channel (event object and shared memory)
-    // This should only be called once.
-    // Check is_channel_created() to see if that's the case.
-    inline bool _Channel::create_channel(int id, const std::string& name_space)
+    inline std::string _Channel::create_name(int id, const std::string& name_space, const char* variable)
     {
-      // Construct mapping and semaphore id strings.
-      // By accepting namespaces we can connect to pre-defined UWP sandboxes.
-
       std::string id_string = std::to_string(id);
       std::string slash;
 
@@ -1449,8 +1562,20 @@ namespace smm
 #endif
       }
 
-      std::string file_mapping_name = name_space + slash + id_string + string::encrypt(".mapping").get();
-      std::string semaphore_name = name_space + slash + id_string + string::encrypt(".signal").get();
+      std::string channel_string = name_space + slash + id_string + variable;
+      return channel_string;
+    }
+
+    // Create communication channel (event object and shared memory)
+    // This should only be called once.
+    // Check is_channel_created() to see if that's the case.
+    inline bool _Channel::create_channel(int id, const std::string& name_space)
+    {
+      // Construct mapping and semaphore id strings.
+      // By accepting namespaces we can connect to pre-defined UWP sandboxes.
+
+      std::string file_mapping_name = _Channel::create_name(id, name_space, string::encrypt(".mapping").get());
+      std::string message_name = _Channel::create_name(id, name_space, string::encrypt(".message").get());
 
       constexpr std::size_t shared_memory_size =
         Shared_Queue<Message_Packet>::get_control_block_size()
@@ -1462,7 +1587,7 @@ namespace smm
         return false;
       }
 
-      if (!this->received_signal.create(semaphore_name))
+      if (!this->message_signal.create(message_name))
       {
         return false;
       }
@@ -1495,7 +1620,7 @@ namespace smm
     inline void _Channel::close()
     {
       this->shared_memory.close();
-      this->received_signal.close();
+      this->message_signal.close();
     }
 
     // ID must be unique
@@ -1510,8 +1635,9 @@ namespace smm
     return this->id;
   }
 
+  // TODO: Return reference here instead of returning a fully constructed new object instance??
   template <typename T>
-  inline T Message::get_content_as() const
+  inline T Message::get_as() const
   {
     // Reinterpret to const to respect const nature of this function,
     // and to allow this to work in functions that accept "const Message&"
@@ -1519,16 +1645,30 @@ namespace smm
   }
 
   template <typename T>
-  inline void Message::set_content_as(int id, T content)
+  inline void Message::set_as(int id, const T& content)
   {
     this->id = id;
     *reinterpret_cast<T*>(this->content) = content;
   }
 
   template <typename T>
-  inline Message::Message(int id, T content)
+  inline void Message::set_as(int id, Message::Type type, Response* response_address, const T& content)
   {
-    this->set_content_as(id, content);
+    this->type = type;
+    this->response_address = response_address;
+    this->set_as<T>(id, content);
+  }
+
+  template <typename T>
+  inline Message::Message(int id, Message::Type type, Response* response_address, const T& content)
+  {
+    this->set_as<T>(id, type, response_address, content);
+  }
+
+  template <typename T>
+  inline Message::Message(int id, const T& content)
+  {
+    this->set_as<T>(id, content);
   }
 
   // Returns true if underlying shared_ptr points to a valid _Client
@@ -1557,36 +1697,21 @@ namespace smm
     this->shared->send(message);
   }
 
-  inline void Client::send(Message message) const
+  inline void Client::send(const Message& message) const
   {
     this->shared->send(&message);
   }
 
   template <typename T, typename... Args>
-  inline void Client::send(Args... args) const
+  inline void Client::send(Args&&... args) const
   {
     this->shared->send<T>(std::forward<Args>(args)...);
   }
 
-  // TODO: Move assignment operator
-  // TODO: Move constructor
-
-  // Copy assignment operator
-  inline Client& Client::operator=(const Client& other)
+  template <typename T, typename... Args>
+  inline std::optional<Response> Client::send_request(Args&&... args) const
   {
-    // Avoid self-assignment
-    if (this != &other)
-    {
-      this->shared = other.shared;
-    }
-
-    return *this;
-  }
-
-  // Copy constructor
-  inline Client::Client(const Client& other) :
-    shared(other.shared)
-  {
+    return this->shared->send_request<T>(std::forward<Args>(args)...);
   }
 
   inline Client::Client(const std::shared_ptr<_detail::_Client>& shared)
@@ -1600,9 +1725,9 @@ namespace smm
     return (this->shared != nullptr);
   }
 
-  inline bool Server::is_thread_running() const
+  inline bool Server::is_listening() const
   {
-    return this->shared->is_thread_running();
+    return this->shared->is_listening();
   }
 
   inline bool Server::is_open() const
@@ -1625,24 +1750,34 @@ namespace smm
     return this->shared->get_handler();
   }
 
-  inline bool Server::listen(message_handler_t message_handler, listening_interval_t interval) const
+  inline void Server::on_message(const message_handler_t& message_handler) const
   {
-    return this->shared->listen(message_handler, interval);
+    this->shared->on_message(message_handler);
   }
 
-  inline const std::shared_future<bool>& Server::listen_async(message_handler_t message_handler, listening_interval_t interval) const
+  inline void Server::on_request(const request_handler_t& request_handler) const
   {
-    return this->shared->listen_async(message_handler, interval);
+    this->shared->on_request(request_handler);
   }
 
-  inline void Server::on_connection(connection_handler_t connection_handler) const
+  inline void Server::on_connection(const connection_handler_t& connection_handler) const
   {
     this->shared->on_connection(connection_handler);
   }
 
-  inline void Server::on_disconnection(disconnection_handler_t disconnection_handler) const
+  inline void Server::on_disconnection(const disconnection_handler_t& disconnection_handler) const
   {
     this->shared->on_disconnection(disconnection_handler);
+  }
+
+  inline bool Server::listen(unsigned int interval) const
+  {
+    return this->shared->listen(interval);
+  }
+
+  inline std::optional<std::shared_future<bool>> Server::listen_async(unsigned int interval) const
+  {
+    return this->shared->listen_async(interval);
   }
 
   inline std::optional<Client> Server::connect(int target_id) const
@@ -1650,19 +1785,19 @@ namespace smm
     return this->shared->connect(target_id);
   }
 
-  inline std::future<std::optional<Client>> Server::connect_async(int target_id) const
+  inline std::optional<std::future<std::optional<Client>>> Server::connect_async(int target_id) const
   {
     return this->shared->connect_async(target_id);
   }
 
-  inline void Server::close(bool wait_until_messages_handled) const
+  inline void Server::close(int handle_final_messages_timeout) const
   {
-    this->shared->close(wait_until_messages_handled);
+    this->shared->close(handle_final_messages_timeout);
   }
 
-  inline std::future<void> Server::close_async(bool wait_until_messages_handled) const
+  inline std::optional<std::future<void>> Server::close_async(int handle_final_messages_timeout) const
   {
-    return this->shared->close_async(wait_until_messages_handled);
+    return this->shared->close_async(handle_final_messages_timeout);
   }
 
   inline bool Server::create(int id, const std::string& name_space) const
@@ -1715,7 +1850,7 @@ namespace smm
     return this->name_space;
   }
 
-  inline std::optional<Client> Connection::accept()
+  inline std::optional<Client> Connection::accept() const
   {
     auto client_exists = this->server->clients.find_if([id = this->id](const Client& client)
     {
@@ -1731,25 +1866,57 @@ namespace smm
     auto& new_client = this->server->clients.insert(std::make_shared<_detail::_Client>(this->id, this->name_space, this->server))->value;
 
     // Send success response to connecting client, and signal-it to wake up connecting client's thread
-    new_client.send<_detail::Message_Connection_Response>(true);
+    new_client.send<_detail::Messages::Connection_Response>(true);
 
     return new_client;
   }
 
-  inline void Connection::reject()
+  inline void Connection::reject() const
   {
     // Nothing here for now. This used to update the handled state
     // but the current implementation doesn't need it anymore.
 
     // TODO:
     //  Send connection rejected response message to handle cases where
-    //  client is already connected. We can also use this to create a generate_id()
-    //  method to continuously try to get a unique id that isn't already associated with a client?
-    //  (Look into it more)
+    //  client is already connected?
+  }
+
+  const Client& Request::get_client() const
+  {
+    return this->client;
+  }
+
+  template <typename T, typename... Args>
+  void Request::respond(Args&&... args) const
+  {
+    T response(std::forward<Args>(args)...);
+    Message message(ID<T>(), Message::Type::Response, this->response_address, response);
+    // or this->client.construct_message<T>(...);
+
+    this->client.send(&message);
+    this->responded.store(true);
   }
 
   namespace _detail
   {
+    // Helper to construct message depending on if send or send_request is called.
+    template <typename T>
+    inline Message _Client::construct_message(const T& custom_message, Message::Type type, Response* response_address)
+    {
+      Message message;
+
+      if (!response_address)
+      {
+        message.set_as<T>(ID<T>(), custom_message);
+      }
+      else
+      {
+        message.set_as<T>(ID<T>(), type, response_address, custom_message);
+      }
+
+      return message;
+    }
+
     inline bool _Client::open(int id, const std::string& name_space)
     {
       if (this->create_channel(id, name_space))
@@ -1781,7 +1948,7 @@ namespace smm
 
     inline void _Client::disconnect(int reason)
     {
-      this->send<Message_Disconnection>(this->server->id, reason);
+      this->send<Messages::Disconnection>(this->server->id, reason);
 
       auto client_exists = this->server->clients.find_if([this](const Client& client)
       {
@@ -1796,7 +1963,7 @@ namespace smm
       this->connected.store(false);
     }
 
-    inline void _Client::send(Message* message)
+    inline void _Client::send(const Message* message)
     {
       if (!this->connected.load())
       {
@@ -1813,25 +1980,71 @@ namespace smm
       this->message_queue.enqueue(data);
 
       // Signal to connected client that they have received a message
-      this->received_signal.increment();
+      this->message_signal.increment();
+    }
+
+    template <typename T, typename... Args>
+    inline void _Client::_send(Message::Type message_type, Response* response_address, Args&&... args)
+    {
+      constexpr int id = ID<T>();
+
+      if constexpr (sizeof...(Args) == 1)
+      {
+        using Arg_T = std::decay_t<std::tuple_element_t<0, std::tuple<Args...>>>;
+
+        if constexpr (std::is_same_v<T, Arg_T>)
+        {
+          // Extract first argument of type T, and send it.
+          // No need to construct it like the branch below because the message is already complete.
+          // This effectively works as a 'const T&' variant of the send function.
+          auto&& custom_message = std::get<0>(std::forward_as_tuple(args...));
+          Message message = this->construct_message<T>(custom_message, message_type, response_address);
+          this->send(&message);
+
+          return;
+        }
+      }
+
+      // Construct custom message with expected arguments, and send it.
+      // Check constructor of T to see what arguments to pass.
+      T custom_message(std::forward<Args>(args)...);
+      Message message = this->construct_message<T>(custom_message, message_type, response_address);
+      this->send(&message);
+
+      return;
     }
 
     template <typename T, typename... Args>
     inline void _Client::send(Args&&... args)
     {
-      // Construct custom message
-      T custom_message(std::forward<Args>(args)...);
-
-      // NOTE:
-      //  If _smm_message_id is protected, end-user must declare
-      //  message struct as friend class of smm::Message
-      int id = custom_message._smm_message_id;
-      Message message(id, custom_message);
-
-      this->send(&message);
+      this->_send<T>(Message::Type::Normal, nullptr, std::forward<Args>(args)...);
     }
 
-    // ID must be unique
+    template <typename T, typename... Args>
+    inline std::optional<Response> _Client::send_request(Args&&... args)
+    {
+      Response response;
+
+      // This function expects a response which means that the message listening loop must be running
+      // to send a message first, else we will never receive the response and unblock this thread
+      // blocked by this function.
+      if (!this->server->listening_loop_running.load())
+      {
+        return std::nullopt;
+      }
+
+      this->_send<T>(Message::Type::Request, &response, std::forward<Args>(args)...);
+
+      // while (response.get_id() == SMM_MESSAGE_ID_UNKNOWN)
+      while (response.response_address == nullptr)
+      {
+        // TODO: Proper timeout
+        this->server->response_signal.wait(INFINITE);
+      }
+
+      return response;
+    }
+
     // This is not meant to be called by end-users.
     inline _Client::_Client(int id, const std::string& name_space, _Server* server) :
       server(server)
@@ -1895,7 +2108,7 @@ namespace smm
 
           if (this->disconnection_handler)
           {
-            int reason = message.get_content_as<Message_Disconnection>().reason;
+            int reason = message.get_as<Messages::Disconnection>().reason;
             this->disconnection_handler(sender, reason);
           }
 
@@ -1905,7 +2118,7 @@ namespace smm
           break;
         }
 
-        // Not an internal message, redirect to user-specified message handler
+        // Not an internal message, redirect to user-specified message/request handler
         default:
         {
           if (!client_exists)
@@ -1913,9 +2126,39 @@ namespace smm
             break;
           }
 
-          if (this->message_handler)
+          switch (message.type)
           {
-            this->message_handler(sender, message);
+            case Message::Type::Normal:
+            {
+              this->message_handler(sender, message);
+              break;
+            }
+            case Message::Type::Request:
+            {
+              Request request(sender, message);
+              this->request_handler(request);
+
+              // If user doesn't explicitly respond with a defined message structure
+              // in the user-assigned request handler, then we must respond with a generic message here instead.
+              // We must do this to unblock the thread of the sender (blocked by send_request).
+              if (!request.responded.load())
+              {
+                request.respond<smm::Messages::No_Response>();
+              }
+
+              break;
+            }
+            case Message::Type::Response:
+            {
+              // Store message in response address.
+              // This cast is fine because Response extends from Message,
+              // but adds no additional members to the class (empty body).
+              *message.response_address = *static_cast<Response*>(&message);
+
+              // Send signal to release sender's blocked thread (at send_request)
+              this->response_signal.increment(Semaphore::max_count);
+              break;
+            }
           }
 
           break;
@@ -1926,13 +2169,13 @@ namespace smm
     // Main message loop for this client.
     // This function waits for messages from other processes, deqeueues them from shared-memory
     // and relays them to the user-specified message handler.
-    inline void _Server::listening_loop(listening_interval_t interval)
+    inline void _Server::listening_loop(unsigned int interval)
     {
       while (this->listening_loop_running.load())
       {
         // Wait for a message
         this->timer.sleep(interval);
-        this->received_signal.wait(INFINITE);
+        this->message_signal.wait(INFINITE);
 
         //Message message;
         bool important = false;
@@ -1947,11 +2190,39 @@ namespace smm
 
         this->_message_handler(data.sender_id, data.message);
       }
+
+      // Notify the waiting thread that listening is done,
+      // make sure notification isn't sent from the same thread to avoid deadblocks.
+      // Currently only the close() function can stop the listening loop,
+      // so the the comparison below is fine.
+      if (this->listening_thread_id.load() != this->closing_thread_id.load())
+      {
+        this->listening_ended_signal.increment();
+      }
+    }
+
+    // Signaling exclusive to _Server (Shared signaling for both _Client and _Server are in _Channel).
+    bool _Server::create_local_signaling(int id, const std::string& name_space)
+    {
+      std::string response_name = _Channel::create_name(id, name_space, string::encrypt(".response").get());
+      std::string listening_ended_name = _Channel::create_name(id, name_space, string::encrypt(".listening:end").get());
+
+      if (!this->response_signal.create(response_name))
+      {
+        return false;
+      }
+
+      if (!this->listening_ended_signal.create(listening_ended_name))
+      {
+        return false;
+      }
+
+      return true;
     }
 
     // Use this in combination with is_channel_created() to (for example)
     // check if the current client object can be reassigned to a new channel
-    inline bool _Server::is_thread_running() const
+    inline bool _Server::is_listening() const
     {
       return this->listening_loop_running.load();
     }
@@ -2007,51 +2278,62 @@ namespace smm
       return this->message_handler;
     }
 
+    inline void _Server::on_message(const message_handler_t& message_handler)
+    {
+      this->message_handler = message_handler;
+    }
+
+    inline void _Server::on_request(const request_handler_t& request_handler)
+    {
+      this->request_handler = request_handler;
+    }
+
+    inline void _Server::on_connection(const connection_handler_t& connection_handler)
+    {
+      this->connection_handler = connection_handler;
+    }
+
+    inline void _Server::on_disconnection(const disconnection_handler_t& disconnection_handler)
+    {
+      this->disconnection_handler = disconnection_handler;
+    }
+
     // This function or it's async variant must be called before connecting or sending messages
-    inline bool _Server::listen(message_handler_t message_handler, listening_interval_t interval)
+    inline bool _Server::listen(unsigned int interval)
     {
       if (!this->open.load())
       {
         return false;
       }
 
+      this->listening_thread_id.store(std::this_thread::get_id());
       this->listening_loop_running.store(true);
-      this->message_handler = message_handler;
       this->listening_loop(interval);
 
       return true;
     }
 
-    inline const std::shared_future<bool>& _Server::listen_async(message_handler_t message_handler, listening_interval_t interval) {
-      // Promisify return value.
+    inline std::optional<std::shared_future<bool>> _Server::listen_async(unsigned int interval)
+    {
       // Only spawn a new thread if not already running
       if (this->listening_loop_running.load())
       {
-        std::promise<bool> promise;
-        promise.set_value(false);
-        this->listening_thread = promise.get_future().share(); // Store a shared future
-        return this->listening_thread;
+        return std::nullopt;
       }
 
       // Launch async operation and store shared future
-      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, message_handler, interval).share();
-
+      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, interval).share();
       return this->listening_thread;
-    }
-
-    inline void _Server::on_connection(connection_handler_t& connection_handler)
-    {
-      this->connection_handler = connection_handler;
-    }
-
-    inline void _Server::on_disconnection(disconnection_handler_t& disconnection_handler)
-    {
-      this->disconnection_handler = disconnection_handler;
     }
 
     // Connects to a given server. Only connects to servers in the same namespace.
     inline std::optional<Client> _Server::connect(int target_id)
     {
+      if (!this->open.load())
+      {
+        return std::nullopt;
+      }
+
       std::optional<Client> result;
 
       auto client_exists = this->clients.find_if([target_id](const Client& client)
@@ -2070,7 +2352,7 @@ namespace smm
       Client new_client(std::make_shared<_Client>(target_id, this->name_space, this));
 
       // Send our id to new_client in connection message
-      new_client.send<Message_Connection>(this->id);
+      new_client.send<Messages::Connection>(this->id);
 
       // Temporary wrapper
       struct Hostage
@@ -2083,7 +2365,7 @@ namespace smm
 
       while (true)
       {
-        this->received_signal.wait(INFINITE); // Wait for message signal to avoid busy waiting
+        this->message_signal.wait(INFINITE); // Wait for message signal to avoid busy waiting
         Hostage hostage;
 
         if (!this->message_queue.dequeue(&hostage.data, &hostage.important))
@@ -2098,7 +2380,7 @@ namespace smm
           continue;
         }
 
-        auto response = hostage.data.message.get_content_as<Message_Connection_Response>();
+        auto response = hostage.data.message.get_as<Messages::Connection_Response>();
 
         if (response.success)
         {
@@ -2123,47 +2405,63 @@ namespace smm
       return result;
     }
 
-    inline std::future<std::optional<Client>> _Server::connect_async(int target_id)
+    inline std::optional<std::future<std::optional<Client>>> _Server::connect_async(int target_id)
     {
+      if (!this->open.load())
+      {
+        return std::nullopt;
+      }
+
       return std::async(std::launch::async, &_Server::connect, this, target_id);
     }
 
-    // Close channel (for example) before reassigning to a new channel
-    inline void _Server::close(bool wait_until_messages_handled, int timeout)
+    inline void _Server::close(int handle_final_messages_timeout)
     {
-      if (!this->open.load())
+      if (!this->open.load()
+        || this->closing_thread_id.load() != std::thread::id())
+        // Some thread already called close() ^
       {
         return;
       }
 
-      // Mark as closed, to disallow more sends
+      this->closing_thread_id.store(std::this_thread::get_id());
+
+      // Mark as closed to disallow more sends
       this->open.store(false);
 
-      if (wait_until_messages_handled)
+      if (handle_final_messages_timeout > 0)
       {
-        // Wait until all remaining messages in message_queue are processed
-        // TODO?: Change sleep_time to 1ms instead for consistency?
-        // TODO?: Semaphore instead of sleep?
-        //        Maybe allow user to change it via a parameter arg?
-        constexpr int sleep_time = 10;
-        int time_passed = 0;
-
-        while (!this->message_queue.is_empty())
+        // Remaining messages should only be handled if close() is called from
+        // a separate thread, otherwise the thread will deadblock.
+        if (this->closing_thread_id.load() != this->listening_thread_id.load())
         {
-          if (time_passed >= timeout)
-          {
-            break;
-          }
+          // Wait until remaining messages in message_queue are processed (until timeout)
+          constexpr int sleep_time = 10;
+          int time_passed = 0;
 
-          this->timer.sleep(sleep_time); // Sleep to avoid busy waiting
-          time_passed += sleep_time;
+          while (!this->message_queue.is_empty())
+          {
+            if (time_passed >= handle_final_messages_timeout)
+            {
+              break;
+            }
+
+            this->timer.sleep(sleep_time); // Sleep to avoid busy waiting
+            time_passed += sleep_time;
+          }
         }
       }
 
-      // Signal to message threads to terminate
+      // Signal message thread to terminate
       this->listening_loop_running.store(false);
+      this->message_signal.increment();
 
-      // Disconnect all clients in clients
+      if (this->closing_thread_id.load() != this->listening_thread_id.load())
+      {
+        this->listening_ended_signal.wait();
+      }
+
+      // Disconnect all clients in clients list.
       // When thats done, there will no longer be open handles to the shared memory, and thus the OS will free it
       for (std::size_t i = 0; i < this->clients.size(); ++i)
       {
@@ -2181,20 +2479,30 @@ namespace smm
       _Channel::close();
     }
 
-    inline std::future<void> _Server::close_async(bool wait_until_messages_handled, int timeout)
+    inline std::optional<std::future<void>> _Server::close_async(int handle_final_messages_timeout)
     {
-      return std::async(std::launch::async, &_Server::close, this, wait_until_messages_handled, timeout);
+      if (!this->open.load())
+      {
+        return std::nullopt;
+      }
+
+      return std::async(std::launch::async, &_Server::close, this, handle_final_messages_timeout);
     }
 
     inline bool _Server::create(int id, const std::string& name_space)
     {
-      // Only closed client instances can create a channel.
+      // Only closed instances can create a channel.
       if (this->open.load())
       {
         return false;
       }
 
       if (!this->create_channel(id, name_space))
+      {
+        return false;
+      }
+
+      if (!this->create_local_signaling(id, name_space))
       {
         return false;
       }
@@ -2239,13 +2547,11 @@ namespace smm
       other.listening_loop_running.store(false);
     }
 
-    // ID must be unique
     inline _Server::_Server(int id, const std::string& name_space)
     {
       this->create(id, name_space);
     }
 
-    // ID must be unique
     inline _Server::_Server(int id)
     {
       this->create(id);
@@ -2253,7 +2559,7 @@ namespace smm
 
     inline _Server::~_Server()
     {
-      this->close();
+      this->close(2048);
     }
   } // namespace _detail
 
