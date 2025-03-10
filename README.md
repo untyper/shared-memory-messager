@@ -2,7 +2,7 @@
 Single header, idiomatic IPC library for C++ 17 (and up)
 
 ## Details
-- Thread-safe (Lock-free)
+- Thread-safe
 - Cross platform
 - Circular buffer based
 - Idiomatic usage pattern
