@@ -1891,13 +1891,13 @@ namespace smm
     //  client is already connected?
   }
 
-  const Client& Request::get_client() const
+  inline const Client& Request::get_client() const
   {
     return this->client;
   }
 
   template <typename T, typename... Args>
-  void Request::respond(Args&&... args) const
+  inline void Request::respond(Args&&... args) const
   {
     T response(std::forward<Args>(args)...);
     Message message(ID<T>(), Message::Type::Response, this->response_address, response);
@@ -2212,7 +2212,7 @@ namespace smm
     }
 
     // Signaling exclusive to _Server (Shared signaling for both _Client and _Server are in _Channel).
-    bool _Server::create_local_signaling(int id, const std::string& name_space)
+    inline bool _Server::create_local_signaling(int id, const std::string& name_space)
     {
       std::string response_name = _Channel::create_name(id, name_space, string::encrypt("response").get());
       std::string listening_ended_name = _Channel::create_name(id, name_space, string::encrypt("listening:end").get());
