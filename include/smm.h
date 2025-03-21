@@ -53,12 +53,10 @@
 //      in the UWP app and pass it to the client through a fullTrustProcess (for example).
 
 // TODO:
-// - (Important)  Namespace mechanism to isolate 3rd party program groups from different authors.
 // - (Important)  Keep alive mechanism to remove abruptly disconnected clients
-// - (Important?) Error codes instead of booleans?
-// - (Important?) Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
-// - (Important?) Proper error handling to handle initialization failures.
-// - (Important?) Test on Unix. No tests have been conducted on Unix yet.
+// - (Important)  Test on Unix. No tests have been conducted on Unix yet.
+// - (Desired)    Error codes instead of booleans?
+// - (Desired)    Wrap 'shared->' dereferences in proper checks for cohesive error messages and failure control.
 // - (Desried)    Mark functions noexcept where appropriate.
 // - (Maybe?)     Callbacks for async functions to execute code right after thread launch?
 
@@ -67,7 +65,15 @@
 // - Use SMM_UNIX_<NNN> format for Unix specific macro definitions.
 // - Inline member fields in a class/struct should use uniform initialization.
 // - All non-empty string literals must be encrypted with string::encrypt().
-//   Dev is free to modify SMM_STRING_SHIFT_AMOUNT for custom encryption outcomes.
+//   Dev is free to define SMM_STRING_SHIFT_AMOUNT for custom encryption outcomes.
+
+// End-ser can define this macro to isolate their program
+// from global access due to id conflicts.
+// Don't uncomment this, instead define this macro before including this file
+// or define it in the compiler definitions flag (/D on MSVC and -D on GCC).
+//#ifndef SMM_DOMAIN
+//#define SMM_DOMAIN "example.domain:app"
+//#endif
 
 // End-user customizeable macro definitions
 #ifndef SMM_MESSAGE_SIZE
@@ -1562,7 +1568,11 @@ namespace smm
 #endif
       }
 
-      std::string channel_string = name_space + slash + id_string + variable;
+#ifdef SMM_DOMAIN
+      std::string channel_string = name_space + slash + string::encrypt(SMM_DOMAIN).get() + "." + id_string + "." + variable;
+#else
+      std::string channel_string = name_space + slash + id_string + "." + variable;
+#endif
       return channel_string;
     }
 
@@ -1574,8 +1584,8 @@ namespace smm
       // Construct mapping and semaphore id strings.
       // By accepting namespaces we can connect to pre-defined UWP sandboxes.
 
-      std::string file_mapping_name = _Channel::create_name(id, name_space, string::encrypt(".mapping").get());
-      std::string message_name = _Channel::create_name(id, name_space, string::encrypt(".message").get());
+      std::string file_mapping_name = _Channel::create_name(id, name_space, string::encrypt("mapping").get());
+      std::string message_name = _Channel::create_name(id, name_space, string::encrypt("message").get());
 
       constexpr std::size_t shared_memory_size =
         Shared_Queue<Message_Packet>::get_control_block_size()
@@ -2204,8 +2214,8 @@ namespace smm
     // Signaling exclusive to _Server (Shared signaling for both _Client and _Server are in _Channel).
     bool _Server::create_local_signaling(int id, const std::string& name_space)
     {
-      std::string response_name = _Channel::create_name(id, name_space, string::encrypt(".response").get());
-      std::string listening_ended_name = _Channel::create_name(id, name_space, string::encrypt(".listening:end").get());
+      std::string response_name = _Channel::create_name(id, name_space, string::encrypt("response").get());
+      std::string listening_ended_name = _Channel::create_name(id, name_space, string::encrypt("listening:end").get());
 
       if (!this->response_signal.create(response_name))
       {
