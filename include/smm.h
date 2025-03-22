@@ -97,6 +97,9 @@
 
 // Non-customizeable macro definitions
 #define SMM_MESSAGE_ID static constexpr int _smm_message_id
+#define SMM_SET_MESSAGE_ID(id) SMM_MESSAGE_ID = id
+#define SMM_GET_MESSAGE_ID(message) message::_smm_message_id
+#define SMM_REUSE_MESSAGE_ID(message) SMM_MESSAGE_ID = SMM_GET_MESSAGE_ID(message)
 
 // Negative message ID's are reserved for internal messages.
 // End-users should use positive integers
@@ -1104,7 +1107,7 @@ namespace smm
 
       Safe_Array<Client, SMM_MAX_CLIENTS_PER_SERVER> clients;
 
-      message_handler_t message_handler{ [](const Client&, const Message&) {} };;
+      message_handler_t message_handler{ [](const Client&, const Message&) {} };
       request_handler_t request_handler{ [](const Request&) {} };
 
       connection_handler_t connection_handler;
