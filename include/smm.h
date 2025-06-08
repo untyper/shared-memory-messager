@@ -771,29 +771,29 @@ namespace smm
     // the address stored in response_address receives response data.
 
     char content
-    [
-      SMM_MESSAGE_SIZE
-      - sizeof(type)
-      - sizeof(id)
-      - sizeof(response_address)
+      [
+        SMM_MESSAGE_SIZE
+          - sizeof(type)
+          - sizeof(id)
+          - sizeof(response_address)
 
-      // Alignment operation for 32-bit <-> 64-bit,
-      // since pointer size differs between them.
-      -((sizeof(response_address) == 8) ? 4 : 0)
-    ]{ 0 };
-    // Total content size should be equal to SMM_MESSAGE_SIZE
+          // Alignment operation for 32-bit <-> 64-bit,
+          // since pointer size differs between them.
+          -((sizeof(response_address) == 8) ? 4 : 0)
+      ]{ 0 };
+        // Total content size should be equal to SMM_MESSAGE_SIZE
 
-    template <typename T>
-    void set_as(int id, const T& content);
+        template <typename T>
+        void set_as(int id, const T& content);
 
-    template <typename T>
-    void set_as(int id, Message::Type type, Response* response_address, const T& content);
+        template <typename T>
+        void set_as(int id, Message::Type type, Response* response_address, const T& content);
 
-    template <typename T>
-    Message(int id, Message::Type type, Response* response_address, const T& content);
+        template <typename T>
+        Message(int id, Message::Type type, Response* response_address, const T& content);
 
-    template <typename T>
-    Message(int id, const T& content);
+        template <typename T>
+        Message(int id, const T& content);
 
   public:
     int get_id() const;
@@ -1943,9 +1943,12 @@ namespace smm
 
     inline void _Client::close()
     {
-      this->connected.store(false);
-      this->server = nullptr;
+      if (this->connected.load())
+      {
+        this->disconnect();
+      }
 
+      this->server = nullptr;
       _Channel::close();
     }
 
