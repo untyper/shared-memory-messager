@@ -19,7 +19,7 @@
 #include <cstddef>
 #include <climits>
 #include <type_traits>
-//#include <iostream>
+#include <iostream>
 
 #ifdef _WIN32
 // Windows includes
@@ -771,29 +771,29 @@ namespace smm
     // the address stored in response_address receives response data.
 
     char content
-      [
-        SMM_MESSAGE_SIZE
-          - sizeof(type)
-          - sizeof(id)
-          - sizeof(response_address)
+    [
+      SMM_MESSAGE_SIZE
+        - sizeof(type)
+        - sizeof(id)
+        - sizeof(response_address)
 
-          // Alignment operation for 32-bit <-> 64-bit,
-          // since pointer size differs between them.
-          -((sizeof(response_address) == 8) ? 4 : 0)
-      ]{ 0 };
-        // Total content size should be equal to SMM_MESSAGE_SIZE
+        // Alignment operation for 32-bit <-> 64-bit,
+        // since pointer size differs between them.
+        -((sizeof(response_address) == 8) ? 4 : 0)
+    ]{ 0 };
+    // Total content size should be equal to SMM_MESSAGE_SIZE
 
-        template <typename T>
-        void set_as(int id, const T& content);
+    template <typename T>
+    void set_as(int id, const T& content);
 
-        template <typename T>
-        void set_as(int id, Message::Type type, Response* response_address, const T& content);
+    template <typename T>
+    void set_as(int id, Message::Type type, Response* response_address, const T& content);
 
-        template <typename T>
-        Message(int id, Message::Type type, Response* response_address, const T& content);
+    template <typename T>
+    Message(int id, Message::Type type, Response* response_address, const T& content);
 
-        template <typename T>
-        Message(int id, const T& content);
+    template <typename T>
+    Message(int id, const T& content);
 
   public:
     int get_id() const;
@@ -878,13 +878,10 @@ namespace smm
     void on_disconnection(const disconnection_handler_t& disconnection_handler) const;
 
     bool listen(unsigned int interval = 1) const;
-    std::optional<std::shared_future<bool>> listen_async(unsigned int interval = 1) const;
+    bool listen_async(unsigned int interval = 1) const;
 
     std::optional<Client> connect(int target_id) const;
-    std::optional<std::future<std::optional<Client>>> connect_async(int target_id) const;
-
-    void close(int handle_final_messages_timeout = 0) const;
-    std::optional<std::future<void>> close_async(int handle_final_messages_timeout = 0) const;
+    void close() const;
 
     bool create(int id, const std::string& name_space) const;
     bool create(int id) const;
@@ -1095,12 +1092,9 @@ namespace smm
     {
     protected:
       Semaphore response_signal;
-      Semaphore listening_ended_signal;
 
       std::atomic<bool> listening_loop_running{ false };
-      std::atomic<std::thread::id> closing_thread_id;
-      std::atomic<std::thread::id> listening_thread_id;
-      std::shared_future<bool> listening_thread;
+      std::optional<std::thread> listening_thread;
 
       High_Precision_Timer timer;
       std::atomic<bool> open{ false };
@@ -1131,13 +1125,10 @@ namespace smm
       void on_disconnection(const disconnection_handler_t& disconnection_handler);
 
       bool listen(unsigned int interval = 1);
-      std::optional<std::shared_future<bool>> listen_async(unsigned int interval = 1);
+      bool listen_async(unsigned int interval = 1);
 
       std::optional<Client> connect(int target_id);
-      std::optional<std::future<std::optional<Client>>> connect_async(int target_id);
-
-      void close(int handle_final_messages_timeout = 0);
-      std::optional<std::future<void>> close_async(int handle_final_messages_timeout = 0);
+      void close();
 
       bool create(int id, const std::string& name_space);
       bool create(int id);
@@ -1788,7 +1779,7 @@ namespace smm
     return this->shared->listen(interval);
   }
 
-  inline std::optional<std::shared_future<bool>> Server::listen_async(unsigned int interval) const
+  inline bool Server::listen_async(unsigned int interval) const
   {
     return this->shared->listen_async(interval);
   }
@@ -1798,19 +1789,9 @@ namespace smm
     return this->shared->connect(target_id);
   }
 
-  inline std::optional<std::future<std::optional<Client>>> Server::connect_async(int target_id) const
+  inline void Server::close() const
   {
-    return this->shared->connect_async(target_id);
-  }
-
-  inline void Server::close(int handle_final_messages_timeout) const
-  {
-    this->shared->close(handle_final_messages_timeout);
-  }
-
-  inline std::optional<std::future<void>> Server::close_async(int handle_final_messages_timeout) const
-  {
-    return this->shared->close_async(handle_final_messages_timeout);
+    this->shared->close();
   }
 
   inline bool Server::create(int id, const std::string& name_space) const
@@ -1943,11 +1924,7 @@ namespace smm
 
     inline void _Client::close()
     {
-      if (this->connected.load())
-      {
-        this->disconnect();
-      }
-
+      this->connected.store(false);
       this->server = nullptr;
       _Channel::close();
     }
@@ -2206,29 +2183,14 @@ namespace smm
 
         this->_message_handler(data.sender_id, data.message);
       }
-
-      // Notify the waiting thread that listening is done,
-      // make sure notification isn't sent from the same thread to avoid deadblocks.
-      // Currently only the close() function can stop the listening loop,
-      // so the the comparison below is fine.
-      if (this->listening_thread_id.load() != this->closing_thread_id.load())
-      {
-        this->listening_ended_signal.increment();
-      }
     }
 
     // Signaling exclusive to _Server (Shared signaling for both _Client and _Server are in _Channel).
     inline bool _Server::create_local_signaling(int id, const std::string& name_space)
     {
       std::string response_name = _Channel::create_name(id, name_space, string::encrypt("response").get());
-      std::string listening_ended_name = _Channel::create_name(id, name_space, string::encrypt("listening:end").get());
 
       if (!this->response_signal.create(response_name))
-      {
-        return false;
-      }
-
-      if (!this->listening_ended_signal.create(listening_ended_name))
       {
         return false;
       }
@@ -2322,24 +2284,28 @@ namespace smm
         return false;
       }
 
-      this->listening_thread_id.store(std::this_thread::get_id());
       this->listening_loop_running.store(true);
       this->listening_loop(interval);
 
       return true;
     }
 
-    inline std::optional<std::shared_future<bool>> _Server::listen_async(unsigned int interval)
+    inline bool _Server::listen_async(unsigned int interval)
     {
       // Only spawn a new thread if not already running
-      if (this->listening_loop_running.load())
+      if (this->listening_loop_running.load() ||
+        this->listening_thread.has_value())
       {
-        return std::nullopt;
+        return false;
       }
 
-      // Launch async operation and store shared future
-      this->listening_thread = std::async(std::launch::async, &_Server::listen, this, interval).share();
-      return this->listening_thread;
+      // Spawn a real std::thread that calls our blocking listen()
+      listening_thread.emplace([this, interval]()
+      {
+        this->listen(interval);
+      });
+
+      return true;
     }
 
     // Connects to a given server. Only connects to servers in the same namespace.
@@ -2381,7 +2347,9 @@ namespace smm
 
       while (true)
       {
-        this->message_signal.wait(INFINITE); // Wait for message signal to avoid busy waiting
+        // Wait for message signal to avoid busy waiting
+        // TODO: Timeout after specified amount of seconds
+        this->message_signal.wait(INFINITE);
         Hostage hostage;
 
         if (!this->message_queue.dequeue(&hostage.data, &hostage.important))
@@ -2421,63 +2389,30 @@ namespace smm
       return result;
     }
 
-    inline std::optional<std::future<std::optional<Client>>> _Server::connect_async(int target_id)
+    inline void _Server::close()
     {
       if (!this->open.load())
-      {
-        return std::nullopt;
-      }
-
-      return std::async(std::launch::async, &_Server::connect, this, target_id);
-    }
-
-    inline void _Server::close(int handle_final_messages_timeout)
-    {
-      if (!this->open.load()
-        || this->closing_thread_id.load() != std::thread::id())
         // Some thread already called close() ^
       {
         return;
       }
 
-      this->closing_thread_id.store(std::this_thread::get_id());
-
       // Mark as closed to disallow more sends
       this->open.store(false);
-
-      if (handle_final_messages_timeout > 0)
-      {
-        // Remaining messages should only be handled if close() is called from
-        // a separate thread, otherwise the thread will deadblock.
-        if (this->closing_thread_id.load() != this->listening_thread_id.load())
-        {
-          // Wait until remaining messages in message_queue are processed (until timeout)
-          constexpr int sleep_time = 10;
-          int time_passed = 0;
-
-          while (!this->message_queue.is_empty())
-          {
-            if (time_passed >= handle_final_messages_timeout)
-            {
-              break;
-            }
-
-            this->timer.sleep(sleep_time); // Sleep to avoid busy waiting
-            time_passed += sleep_time;
-          }
-        }
-      }
 
       // Signal message thread to terminate
       this->listening_loop_running.store(false);
       this->message_signal.increment();
 
-      if (this->closing_thread_id.load() != this->listening_thread_id.load())
+      // If we spawned a thread, join it
+      if (this->listening_thread &&
+        this->listening_thread->joinable() &&
+        this->listening_thread->get_id() != std::this_thread::get_id())
       {
-        this->listening_ended_signal.wait();
+        this->listening_thread->join();
       }
 
-      // Disconnect all clients in clients list.
+      // Disconnect all clients.
       // When thats done, there will no longer be open handles to the shared memory, and thus the OS will free it
       for (std::size_t i = 0; i < this->clients.size(); ++i)
       {
@@ -2493,16 +2428,6 @@ namespace smm
 
       // Unmap file memory and close all handles
       _Channel::close();
-    }
-
-    inline std::optional<std::future<void>> _Server::close_async(int handle_final_messages_timeout)
-    {
-      if (!this->open.load())
-      {
-        return std::nullopt;
-      }
-
-      return std::async(std::launch::async, &_Server::close, this, handle_final_messages_timeout);
     }
 
     inline bool _Server::create(int id, const std::string& name_space)
@@ -2575,7 +2500,7 @@ namespace smm
 
     inline _Server::~_Server()
     {
-      this->close(2048);
+      this->close();
     }
   } // namespace _detail
 
