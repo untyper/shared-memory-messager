@@ -7,7 +7,8 @@ Supports Windows (including UWP sandbox) and Unix.
 
 ```cpp
 // Server
-class smm::Server {
+class smm::Server
+{
 public:
   bool create(int id) const;
   void on_connection(smm::connection_handler_t) const;
@@ -23,7 +24,8 @@ public:
 };
 
 // Client
-class smm::Client {
+class smm::Client
+{
 public:
   bool is_valid() const;
   bool is_connected() const;
@@ -96,9 +98,9 @@ if (auto client = maybeClient)
 
 ## Caveats
 
-* **Fixed message size** (`SMM_MESSAGE_SIZE`, default 4096 B).
-* **Fixed queue capacity** (`SMM_MAX_QUEUE_CAPACITY`, default 16).
-* Must call **`close()`** before exiting to clean up.
+* Fixed message size (`SMM_MESSAGE_SIZE`, default 4096 B).
+* Fixed queue capacity (`SMM_MAX_QUEUE_CAPACITY`, default 16).
+* Must call `close()` before exiting to clean up.
 * UWP: namespaces correspond to AppContainer paths.
 
 ## License
