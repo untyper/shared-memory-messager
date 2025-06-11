@@ -849,7 +849,7 @@ namespace smm
     int get_id() const;
 
     template <typename T>
-    T get_as(bool without_id = false) const;
+    T get_as() const;
 
     Message() = default;
 
@@ -1691,20 +1691,11 @@ namespace smm
 
   // TODO: Maybe create separate function for without_id
   template <typename T>
-  inline T Message::get_as(bool without_id) const
+  inline T Message::get_as() const
   {
     // Reinterpret to const to respect const nature of this function,
     // and to allow this to work in functions that accept "const Message&"
-    auto ptr = reinterpret_cast<const char*>(this->content);
-
-    if (without_id)
-    {
-      // Skip over ID member
-      ptr += sizeof(SMM_MESSAGE_ID_TYPE);
-    }
-
-    // Now reinterpret as a T
-    return *reinterpret_cast<const T*>(ptr);
+    return *reinterpret_cast<const T*>(this->content);
   }
 
   template <typename T>
